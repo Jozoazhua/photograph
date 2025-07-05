@@ -1,56 +1,44 @@
 # Photograph
-Photograph 是一个基于 PySide6 开发的桌面应用，旨在提供一个强大而易用的图片搜刮和批量下载解决方案。它通过简洁直观的图形界面，帮助用户高效地从指定网站搜索、预览和批量下载图片集。
+Dream Gallery Crawler designed to provide a powerful and user-friendly solution for scraping and batch downloading images. It helps users efficiently search, preview, and batch download image sets from specified websites through a clean and intuitive graphical interface.
 
 ![search.png](images/search.png)
 ![preview.png](images/preview.png)
 ![download.png](images/download.png)
 
-> 本项目仅供学习与研究使用，若涉及侵权请联系删除。
+> This project is for learning and research purposes only. It is strictly forbidden for illegal use, otherwise, you will be responsible for the consequences. If there is any infringement, please contact me to delete it.
 
-## 主要功能
-- **关键词搜索**：通过关键词在目标网站搜索图集。
-- **网址解析**：支持直接输入图集或列表页面的网址进行浏览。
-- **分页浏览**：支持多页搜索结果的翻页、跳转。
-- **图集预览**：在下载前可预览图集内的所有缩略图。
-- **单图查看/下载**：在预览界面，可以查看或下载单张原始图片。
-- **批量下载**：
-    - 下载选中的一个或多个图集。
-    - 一键下载当前页面的所有图集。
-    - 一键下载所有搜索结果页面的全部图集。
-- **下载管理**：
-    - 在“下载管理”选项卡中查看所有下载任务。
-    - 显示每个任务的标题、作者、状态和实时进度。
-    - 支持取消正在进行或排队中的任务。
-    - 可以清除已完成的下载记录。
+## Features
+- **Keyword Search**: Search for image sets by keywords.
+- **URL Parsing**: Supports browsing image sets or lists directly via URL.
+- **Pagination**: Supports navigating and jumping between pages of search results.
+- **Gallery Preview**: Preview all images in a gallery before downloading.
+- **Single Image View**: View or download single original images during preview.
+- **Batch Download**: Supports downloading selected, current page, or all pages of image sets.
+- **Download Management**: View download task status and progress, with support for canceling tasks and clearing records.
 
-## 使用说明
-1.  在顶部的输入框中输入关键词，点击“搜索”按钮；或直接粘贴目标网址后按回车。
-2.  程序将以缩略图形式展示搜索结果。
-3.  点击图集下方的“预览”按钮，可以打开新窗口查看该图集的所有图片。
-4.  点击图集下方的“下载”按钮，或在预览窗口中选择下载，可将任务添加至“下载管理”列表。
-5.  通过勾选图集并使用下方的“下载选中”、“下载本页”等按钮，可以实现批量下载。
-6.  切换到“下载管理”选项卡，可以查看和管理所有下载任务。
+## How to Use
+1.  Enter keywords in the top input box and click the "Search" button, or paste a target URL and press Enter.
+2.  The program will display the search results as thumbnails.
+3.  Click the "Preview" button below a gallery to open a new window and view all its images.
+4.  Click the "Download" button below a gallery, or choose to download from the preview window, to add the task to the "Download Management" list.
+5.  Use the "Download Selected", "Download This Page" buttons after checking galleries to perform batch downloads.
+6.  Switch to the "Download Management" tab to view and manage all download tasks.
 
-## 安装依赖
-建议使用Python 3.10及以上版本。
+## Installation
+Python 3.10 or higher is recommended.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 运行方法
+## How to Run
 
 ```bash
 python photograph.py
 ```
 
-## 依赖列表
-- requests
-- beautifulsoup4
-- PySide6
-
-## 许可协议
+## License
 MIT License
 
-## 致谢
+## Acknowledgements
 - 吾爱@DrCatcher

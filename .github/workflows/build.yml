@@ -1,16 +1,17 @@
-name: Build Python Executable
+name: Build and Release
 
 on:
-  push:
-    tags:
-      - 'v*'
-  workflow_dispatch:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -29,25 +30,25 @@ jobs:
             arch: arm64
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v4
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install system dependencies (macOS)
+      - name: Install dependencies (macOS)
         if: contains(matrix.os, 'macos')
+        run: brew install imagemagick create-dmg
+
+      - name: Install Python dependencies
         run: |
-          # 安装ImageMagick用于图标转换
-          brew install imagemagick
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller Pillow
 
       - name: Convert icon (macOS)
         if: contains(matrix.os, 'macos')
         run: |
-          # 将PNG转换为ICNS格式
           mkdir -p icon.iconset
           sips -z 16 16 icon.png --out icon.iconset/icon_16x16.png
           sips -z 32 32 icon.png --out icon.iconset/icon_16x16@2x.png
@@ -60,125 +61,71 @@ jobs:
           iconutil -c icns icon.iconset
           mv icon.icns icon_macos.icns
 
-      - name: Convert icon (Windows)
+      - name: Build Executable (Windows)
         if: matrix.os == 'windows-latest'
-        run: |
-          # Windows使用原始PNG文件，PyInstaller会自动处理
-          copy icon.png icon_windows.png
+        run: pyinstaller --onefile --windowed --icon=icon.png --name=downloader --distpath=dist photograph.py
         shell: cmd
 
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller Pillow
-
-      - name: Build with PyInstaller (Windows)
-        if: matrix.os == 'windows-latest'
-        run: |
-          pyinstaller --onefile --windowed --icon=icon.png --name=downloader --distpath=dist --workpath=build --specpath=. photograph.py
-        shell: cmd
-
-      - name: Build with PyInstaller (macOS)
+      - name: Build Executable (macOS)
         if: contains(matrix.os, 'macos')
         run: |
-          pyinstaller --onefile --windowed --icon=icon_macos.icns --name=downloader --distpath=dist --workpath=build --specpath=. photograph.py
-
-      - name: Ad-hoc Sign Application (macOS)
-        if: contains(matrix.os, 'macos')
-        run: |
-          codesign --force --deep --sign - dist/downloader.app
+          pyinstaller --onefile --windowed --icon=icon_macos.icns --name=downloader --distpath=dist photograph.py
 
       - name: Create DMG (macOS)
         if: contains(matrix.os, 'macos')
         run: |
-          # 安装create-dmg工具
-          brew install create-dmg
-          
-          # 创建应用程序目录结构
-          mkdir -p "dist/downloader.app/Contents/MacOS"
-          mkdir -p "dist/downloader.app/Contents/Resources"
-          
-          # 移动可执行文件到.app包中
-          mv dist/downloader "dist/downloader.app/Contents/MacOS/"
-          
-          # 复制图标
-          cp icon_macos.icns "dist/downloader.app/Contents/Resources/icon.icns"
-          
-          # 获取架构信息
-          ARCH_NAME="${{ matrix.arch }}"
-          if [ "$ARCH_NAME" = "intel" ]; then
-            BUNDLE_ID="com.example.downloader.intel"
-            DISPLAY_NAME="downloader (Intel)"
-          else
-            BUNDLE_ID="com.example.downloader.arm64"
-            DISPLAY_NAME="downloader (Apple Silicon)"
-          fi
-          
-          # 创建Info.plist文件
-          cat > "dist/downloader.app/Contents/Info.plist" << EOF
+          mkdir -p dist/downloader.app/Contents/{MacOS,Resources}
+          mv dist/downloader dist/downloader.app/Contents/MacOS/
+          cp icon_macos.icns dist/downloader.app/Contents/Resources/icon.icns
+          cat > dist/downloader.app/Contents/Info.plist << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-              <key>CFBundleExecutable</key>
-              <string>downloader</string>
-              <key>CFBundleIdentifier</key>
-              <string>$BUNDLE_ID</string>
-              <key>CFBundleName</key>
-              <string>$DISPLAY_NAME</string>
-              <key>CFBundleDisplayName</key>
-              <string>$DISPLAY_NAME</string>
-              <key>CFBundleVersion</key>
-              <string>1.0</string>
-              <key>CFBundleIconFile</key>
-              <string>icon.icns</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>LSRequiresNativeExecution</key>
-              <true/>
+            <key>CFBundleExecutable</key>
+            <string>downloader</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.example.downloader.${{ matrix.arch }}</string>
+            <key>CFBundleName</key>
+            <string>downloader</string>
+            <key>CFBundleDisplayName</key>
+            <string>downloader</string>
+            <key>CFBundleVersion</key>
+            <string>1.0</string>
+            <key>CFBundleIconFile</key>
+            <string>icon.icns</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSRequiresNativeExecution</key>
+            <true/>
           </dict>
           </plist>
           EOF
-          
-          # 使可执行文件具有执行权限
-          chmod +x "dist/downloader.app/Contents/MacOS/downloader"
-          
-          # 创建DMG文件
-          create-dmg \
-            --volname "$DISPLAY_NAME" \
-            --volicon "icon_macos.icns" \
-            --window-pos 200 120 \
-            --window-size 600 400 \
-            --icon-size 100 \
-            --icon "downloader.app" 175 190 \
-            --hide-extension "downloader.app" \
-            --app-drop-link 425 190 \
-            "dist/${{ matrix.artifact_name }}" \
-            "dist/downloader.app"
+          chmod +x dist/downloader.app/Contents/MacOS/downloader
+          create-dmg --volname "downloader-${{ matrix.arch }}" --volicon icon_macos.icns --window-pos 200 120 --window-size 600 400 --icon-size 100 --icon "downloader.app" 175 190 --hide-extension "downloader.app" --app-drop-link 425 190 dist/${{ matrix.artifact_name }} dist/downloader.app
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.artifact_name }}
-          retention-days: 30
 
-      # 创建Release（仅在推送标签时）
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create Release and Upload
         uses: softprops/action-gh-release@v1
         with:
-          files: dist/${{ matrix.artifact_name }}
+          files: |
+            dist/**/*.exe
+            dist/**/*.dmg
           name: Release ${{ github.ref_name }}
-          body: |
-            ## 更新内容
-            - 自动构建的可执行文件
-            - 支持Windows和macOS平台
-            
-            ## 下载
-            - Windows: downloader.exe
-            - macOS: downloader
           draft: false
           prerelease: false
         env:
