@@ -1,6 +1,9 @@
 # Photograph
+Photograph 是一个基于 PySide6 开发的桌面应用，旨在提供一个强大而易用的图片搜刮和批量下载解决方案。它通过简洁直观的图形界面，帮助用户高效地从指定网站搜索、预览和批量下载图片集。
 
-Photograph 是一个基于 PySide6 开发的桌面应用，支持从指定网站批量获取和下载图片。用户可通过简洁的图形界面，便捷地搜索、浏览并保存图片到本地，适合需要高效图片管理与采集的场景。
+![search.png](images/search.png)
+![preview.png](images/preview.png)
+![download.png](images/download.png)
 
 > 本项目仅供学习与研究使用，若涉及侵权请联系删除。
 
