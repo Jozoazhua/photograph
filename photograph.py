@@ -6,6 +6,7 @@ import sys
 import time
 from collections import deque
 from functools import partial
+import random
 from typing import List, Dict, Optional, Tuple, Any
 from urllib.parse import urljoin, urlparse
 
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
     QMessageBox, QLabel, QDialog,
     QScrollArea, QGridLayout, QProgressBar, QTabWidget, QStatusBar,
-    QProgressDialog, QFrame, QFileDialog, QSpacerItem, QSizePolicy
+    QProgressDialog, QFrame, QFileDialog, QSpacerItem, QSizePolicy, QButtonGroup, QComboBox
 )
 from bs4 import BeautifulSoup
 
@@ -27,8 +28,46 @@ logger = logging.getLogger(__name__)
 
 # --- Constants & Styles ---
 BASE_URL = "https://www.mxd009.cc"
+GALLERY = "/gallery/"
+RANKINGS = {
+    "请选择排行榜": "",
+    "点击排行": "/sort/onclick/",
+    "收藏排行": "/sort/favnum/",
+    "点赞排行": "/sort/diggtop/",
+    "下载排行": "/sort/totaldown/"
+}
+TAGS = {
+    "请选择标签": "",
+    "丝袜诱惑": "/tags/siwayouhuo.html",
+    "丝袜美腿": "/tags/siwameitui.html",
+    "萝莉控": "/tags/luolikong.html",
+    "黑丝诱惑": "/tags/heisiyouhuo.html",
+    "街拍": "/tags/jiepai.html",
+    "美臀": "/tags/meitun.html",
+    "大尺-度": "/tags/dachi-du.html",
+    "JK": "/tags/jk.html",
+    "COS": "/tags/cos.html",
+    "美胸": "/tags/meixiong.html",
+    "制服诱惑": "/tags/zhifuyouhuo.html",
+    "私房": "/tags/sifang.html",
+    "性感": "/tags/xinggan.html",
+    "丝足诱惑": "/tags/sizuyouhuo.html",
+    "尤物": "/tags/youwu.html"
+}
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 OPR/107.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 Safari/605.1.15"
+]
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "User-Agent": random.choice(USER_AGENTS),
     "Referer": BASE_URL,
 }
 MAX_CONCURRENT_DOWNLOADS = 3
@@ -88,9 +127,11 @@ class WebScraper:
                     "count": count_match.group(0) if count_match else "0",
                 })
 
-        if page_div := soup.find("div", class_="layui-box layui-laypage"):
+        if page_div := (soup.find("div", id="page") or soup.find("div", class_="layui-box layui-laypage")):
             if page_info := (page_div.find("span", class_="layui-laypage-count") or page_div.find("span")):
-                if match := re.search(r'/(\d+)', page_info.text):
+                if match := re.search(r'(\d+)/(\d+)', page_info.text):
+                    total_pages = int(match.group(2))
+                elif match := re.search(r'/(\d+)', page_info.text):
                     total_pages = int(match.group(1))
         elif (tag_div := soup.find("div", class_="biaoqian")) and (p_text := tag_div.find("p")):
             if match := re.search(r'(\d+)', p_text.get_text(strip=True)):
@@ -132,18 +173,23 @@ class WebScraper:
 # --- Worker Threads ---
 class BaseWorker(QThread):
     error = Signal(str)
+
     def __init__(self):
         super().__init__()
         self.is_cancelled = False
+
     def cancel(self):
         self.is_cancelled = True
+
 
 class ImageLoadWorker(BaseWorker):
     image_loaded = Signal(QPixmap)
     load_failed = Signal()
+
     def __init__(self, url):
         super().__init__()
         self.url = url
+
     def run(self):
         session = WebScraper.get_session()
         try:
@@ -159,11 +205,14 @@ class ImageLoadWorker(BaseWorker):
             if not self.is_cancelled:
                 self.load_failed.emit()
 
+
 class SearchWorker(BaseWorker):
     results_ready = Signal(list, int, str)
+
     def __init__(self, query):
         super().__init__()
         self.query = query
+
     def run(self):
         session = WebScraper.get_session()
         try:
@@ -177,58 +226,101 @@ class SearchWorker(BaseWorker):
         except Exception as e:
             if not self.is_cancelled: self.error.emit(f"搜索错误: {e}")
 
+
 class PageFetchWorker(BaseWorker):
     results_ready = Signal(list, int)
+
     def __init__(self, base_url, page):
         super().__init__()
         self.base_url, self.page = base_url, page
+
     def run(self):
         session = WebScraper.get_session()
+        page_url = ""
         try:
             if "searchid" in self.base_url and (match := re.search(r"searchid=(\d+)", self.base_url)):
                 page_url = f"{BASE_URL}/e/search/result/index.php?page={self.page - 1}&searchid={match.group(1)}"
+            elif "/tags/" in self.base_url:
+                if self.page == 1:
+                    page_url = self.base_url
+                else:
+                    path, ext = os.path.splitext(self.base_url)
+                    # Ensure we don't append page to a URL that already has it
+                    path = re.sub(r'_\d+$', '', path)
+                    page_url = f"{path}_{self.page}{ext}"
             else:
-                base = re.sub(r'(_\d+)?\.html$', '', self.base_url)
-                page_url = f"{base}_{self.page}.html" if self.page > 1 else f"{base}.html"
+                if self.page == 1:
+                    page_url = self.base_url
+                elif self.base_url.endswith('/'):
+                    base = self.base_url.rstrip('/')
+                    page_url = f"{base}/index_{self.page}.html"
+                else:
+                    path, ext = os.path.splitext(self.base_url)
+                    path = re.sub(r'_\d+$', '', path)
+                    page_url = f"{path}_{self.page}{ext}"
+
             if self.is_cancelled: return
             response = session.get(page_url, timeout=15)
+            response.raise_for_status()
             if self.is_cancelled: return
             items, pages = WebScraper.parse_search_results_page(response.text)
             self.results_ready.emit(items, pages)
         except Exception as e:
-            if not self.is_cancelled: self.error.emit(f"翻页错误: {e}")
+            if not self.is_cancelled: self.error.emit(f"翻页错误 (Page {self.page}, URL: {page_url}): {e}")
+
 
 class AllPagesFetchWorker(BaseWorker):
     progress = Signal(int, int)
     results_ready = Signal(list)
+
     def __init__(self, base_url, total_pages):
         super().__init__()
         self.base_url, self.total_pages = base_url, total_pages
+
     def run(self):
         session = WebScraper.get_session()
         all_items = []
+        page_url = ""
         try:
             for page in range(1, self.total_pages + 1):
                 if self.is_cancelled: return self.error.emit("已取消")
                 self.progress.emit(page, self.total_pages)
                 if "searchid" in self.base_url and (match := re.search(r"searchid=(\d+)", self.base_url)):
                     page_url = f"{BASE_URL}/e/search/result/index.php?page={page - 1}&searchid={match.group(1)}"
+                elif "/tags/" in self.base_url:
+                    if page == 1:
+                        page_url = self.base_url
+                    else:
+                        path, ext = os.path.splitext(self.base_url)
+                        path = re.sub(r'_\d+$', '', path)
+                        page_url = f"{path}_{page}{ext}"
                 else:
-                    base = re.sub(r'(_\d+)?\.html$', '', self.base_url)
-                    page_url = f"{base}_{page}.html" if page > 1 else f"{base}.html"
+                    if page == 1:
+                        page_url = self.base_url
+                    elif self.base_url.endswith('/'):
+                        base = self.base_url.rstrip('/')
+                        page_url = f"{base}/index_{page}.html"
+                    else:
+                        path, ext = os.path.splitext(self.base_url)
+                        path = re.sub(r'_\d+$', '', path)
+                        page_url = f"{path}_{page}{ext}"
+
                 response = session.get(page_url, timeout=15)
                 items, _ = WebScraper.parse_search_results_page(response.text)
                 all_items.extend(items)
                 time.sleep(0.1)
             self.results_ready.emit(all_items)
         except Exception as e:
-            if not self.is_cancelled: self.error.emit(f"获取全部页面时出错: {e}")
+            if not self.is_cancelled: self.error.emit(f"获取全部页面时出错 (Page {page}, URL: {page_url}): {e}")
+
 
 class GalleryWorker(BaseWorker):
     results_ready = Signal(list)
+
     def __init__(self, url):
         super().__init__()
         self.url = url
+
     def run(self):
         session = WebScraper.get_session()
         try:
@@ -237,11 +329,14 @@ class GalleryWorker(BaseWorker):
         except Exception as e:
             if not self.is_cancelled: self.error.emit(f"获取图集信息错误: {e}")
 
+
 class ThumbnailWorker(BaseWorker):
     urls_ready = Signal(list)
+
     def __init__(self, url, count):
         super().__init__()
         self.url, self.count = url, count
+
     def run(self):
         session = WebScraper.get_session()
         try:
@@ -259,11 +354,12 @@ class ThumbnailWorker(BaseWorker):
         except Exception as e:
             if not self.is_cancelled: self.error.emit(f"获取缩略图网址错误: {e}")
 
-# --- MODIFIED: DownloadWorker with Chinese status messages ---
+
 class DownloadWorker(BaseWorker):
     progress = Signal(QTreeWidgetItem, int)
     finished = Signal(QTreeWidgetItem, str, bool)
-    def __init__(self, task_item):
+
+    def __init__(self, task_item, download_dir):
         super().__init__()
         self.task_item = task_item
         data = task_item.data(0, Qt.ItemDataRole.UserRole)
@@ -271,15 +367,16 @@ class DownloadWorker(BaseWorker):
         self.title = task_item.text(0)
         self.url = data["url"]
         self.total_count = data["count"]
+        self.download_dir = download_dir
+
     def run(self):
         self.session = WebScraper.get_session()
         try:
             if not (urls := self._get_image_urls()):
                 return self.finished.emit(self.task_item, "链接获取失败", False)
-            download_dir = get_download_directory()
-            safe_author = re.sub(r'[\\/*?:"<>|]', "", self.author)
-            safe_title = re.sub(r'[\\/*?:"<>|]', "", self.title)
-            album_dir = os.path.join(download_dir, safe_author, safe_title)
+            safe_author = re.sub(r'[\/*?:"<>|]', "", self.author)
+            safe_title = re.sub(r'[\/*?:"<>|]', "", self.title)
+            album_dir = os.path.join(self.download_dir, safe_author, safe_title)
             os.makedirs(album_dir, exist_ok=True)
             total, success = len(urls), 0
             for i, url in enumerate(urls):
@@ -292,6 +389,7 @@ class DownloadWorker(BaseWorker):
             self.finished.emit(self.task_item, f"完成 ({success}/{total})", True)
         except Exception as e:
             if not self.is_cancelled: self.finished.emit(self.task_item, f"错误: {e}", False)
+
     def _get_image_urls(self):
         response = self.session.get(self.url, timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
@@ -301,6 +399,7 @@ class DownloadWorker(BaseWorker):
         start_num, padding = int(num_str), len(num_str)
         base = urljoin(self.url, src.rsplit('/', 1)[0])
         return [f"{base}/{i:0{padding}d}{ext}" for i in range(start_num, start_num + self.total_count)]
+
     def _download_image(self, url, filepath):
         if os.path.exists(filepath): return True
         try:
@@ -311,15 +410,19 @@ class DownloadWorker(BaseWorker):
                         if self.is_cancelled: return False
                         f.write(chunk)
             return True
-        except requests.RequestException: return False
+        except requests.RequestException:
+            return False
+
 
 class FileDownloadWorker(QThread):
     progress = Signal(int)
     finished = Signal(bool, str)
+
     def __init__(self, url: str, filepath: str, parent=None):
         super().__init__(parent)
         self.url, self.filepath = url, filepath
         self.is_cancelled = False
+
     def run(self):
         session = WebScraper.get_session()
         try:
@@ -336,8 +439,10 @@ class FileDownloadWorker(QThread):
             self.finished.emit(True, "下载完成。")
         except Exception as e:
             if not self.is_cancelled: self.finished.emit(False, str(e))
+
     def cancel(self):
         self.is_cancelled = True
+
 
 # --- Managers ---
 class ImageDownloadManager(QObject):
@@ -346,6 +451,7 @@ class ImageDownloadManager(QObject):
         self.max_concurrent = max_concurrent
         self.active_workers, self.pending_requests = {}, deque()
         self.is_shutting_down = False
+
     def download_image(self, url, owner, callback, error_callback=None):
         if self.is_shutting_down: return
         request = {'url': url, 'owner': owner, 'callback': callback, 'error_callback': error_callback or (lambda: None)}
@@ -353,6 +459,7 @@ class ImageDownloadManager(QObject):
             self._start_download(request)
         else:
             self.pending_requests.append(request)
+
     def _start_download(self, request):
         worker = ImageLoadWorker(request['url'])
         worker.image_loaded.connect(request['callback'])
@@ -361,16 +468,19 @@ class ImageDownloadManager(QObject):
         worker.finished.connect(worker.deleteLater)
         self.active_workers[worker] = request
         worker.start()
+
     def _on_worker_finished(self, worker):
         if worker in self.active_workers:
             del self.active_workers[worker]
         if self.pending_requests and not self.is_shutting_down:
             self._start_download(self.pending_requests.popleft())
+
     def cancel_requests_for_owner(self, owner):
         self.pending_requests = deque([r for r in self.pending_requests if r['owner'] != owner])
         for worker, req in list(self.active_workers.items()):
             if req['owner'] == owner:
                 worker.cancel()
+
     def shutdown(self):
         logger.info("Shutting down ImageDownloadManager...")
         self.is_shutting_down = True
@@ -379,17 +489,19 @@ class ImageDownloadManager(QObject):
             worker.cancel()
         return list(self.active_workers.keys())
 
+
 class APIManager(QObject):
-    search_results_ready=Signal(list, int, str)
-    page_results_ready=Signal(list, int)
-    gallery_info_ready=Signal(list)
-    thumbnail_urls_ready=Signal(list)
-    error=Signal(str)
-    all_pages_results_ready=Signal(list)
-    all_pages_progress=Signal(int, int)
+    search_results_ready = Signal(list, int, str)
+    page_results_ready = Signal(list, int)
+    gallery_info_ready = Signal(list)
+    thumbnail_urls_ready = Signal(list)
+    error = Signal(str)
+    all_pages_results_ready = Signal(list)
+    all_pages_progress = Signal(int, int)
+
     def __init__(self):
         super().__init__()
-        self.current_worker=None
+        self.current_worker = None
         self.concurrent_workers = []
 
     def _start_worker(self, worker_class, *args, concurrent=False):
@@ -405,15 +517,17 @@ class APIManager(QObject):
             self.current_worker = worker
             worker.finished.connect(lambda: self._clear_worker_ref(worker))
         else:
-            # 管理并发工作线程
             self.concurrent_workers.append(worker)
             worker.finished.connect(lambda: self._remove_concurrent_worker(worker))
 
         worker.error.connect(self.error)
         worker.finished.connect(worker.deleteLater)
-        if isinstance(worker, SearchWorker): worker.results_ready.connect(self.search_results_ready)
-        elif isinstance(worker, PageFetchWorker): worker.results_ready.connect(self.page_results_ready)
-        elif isinstance(worker, GalleryWorker): worker.results_ready.connect(self.gallery_info_ready)
+        if isinstance(worker, SearchWorker):
+            worker.results_ready.connect(self.search_results_ready)
+        elif isinstance(worker, PageFetchWorker):
+            worker.results_ready.connect(self.page_results_ready)
+        elif isinstance(worker, GalleryWorker):
+            worker.results_ready.connect(self.gallery_info_ready)
         elif isinstance(worker, ThumbnailWorker):
             worker.urls_ready.connect(self.thumbnail_urls_ready, Qt.ConnectionType.QueuedConnection)
         elif isinstance(worker, AllPagesFetchWorker):
@@ -423,7 +537,6 @@ class APIManager(QObject):
         worker.start()
 
     def _remove_concurrent_worker(self, worker):
-        """移除完成的并发工作线程"""
         try:
             if worker in self.concurrent_workers:
                 self.concurrent_workers.remove(worker)
@@ -432,40 +545,48 @@ class APIManager(QObject):
             pass
 
     def _clear_worker_ref(self, worker):
-        """清除完成的主工作线程引用"""
         if self.current_worker is worker:
             self.current_worker = None
-            logger.info(f"Cleared reference to finished worker: {type(worker).__name__}")
 
     def search(self, query):
-        if query.startswith(f"{BASE_URL}/gallery"): self._start_worker(GalleryWorker, query)
-        elif query.startswith(BASE_URL): self._start_worker(PageFetchWorker, query, 1)
-        else: self._start_worker(SearchWorker, query)
-    def fetch_page(self, base_url, page): self._start_worker(PageFetchWorker, base_url, page)
-    def fetch_all_pages(self, base_url, total_pages): self._start_worker(AllPagesFetchWorker, base_url, total_pages)
-    def fetch_thumbnail_urls(self, url, count): self._start_worker(ThumbnailWorker, url, count, concurrent=True)
+        if query.startswith(f"{BASE_URL}/gallery"):
+            self._start_worker(GalleryWorker, query)
+        elif query.startswith(BASE_URL):
+            self._start_worker(PageFetchWorker, query, 1)
+        else:
+            self._start_worker(SearchWorker, query)
+
+    def fetch_page(self, base_url, page):
+        self._start_worker(PageFetchWorker, base_url, page)
+
+    def fetch_all_pages(self, base_url, total_pages):
+        self._start_worker(AllPagesFetchWorker, base_url, total_pages)
+
+    def fetch_thumbnail_urls(self, url, count):
+        self._start_worker(ThumbnailWorker, url, count, concurrent=True)
+
     def cancel_all(self):
         if self.current_worker and self.current_worker.isRunning():
             self.current_worker.cancel()
+
     def shutdown(self):
-        logger.info("Shutting down APIManager...")
         self.cancel_all()
 
-        # 等待所有并发工作线程完成
         all_workers = []
         if self.current_worker and self.current_worker.isRunning():
             all_workers.append(self.current_worker)
         all_workers.extend([w for w in self.concurrent_workers if w.isRunning()])
 
-        # 取消所有工作线程
         for worker in all_workers:
             worker.cancel()
 
         return all_workers
 
+
 # --- UI Components ---
 class ThumbnailWidget(QFrame):
     STATUS_PENDING, STATUS_LOADING, STATUS_LOADED, STATUS_FAILED = range(4)
+
     def __init__(self, item_data: Dict[str, Any], parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.item_data = item_data
@@ -476,6 +597,7 @@ class ThumbnailWidget(QFrame):
         self.setFixedSize(220, 360)
         self.setStyleSheet("QFrame { border: 1px solid #ddd; border-radius: 5px; background-color: white; }")
         self.init_ui()
+
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -503,14 +625,19 @@ class ThumbnailWidget(QFrame):
         layout.addWidget(self.img_label)
         layout.addWidget(info_label)
         layout.addLayout(btn_layout)
-    def isSelected(self): return self._is_selected
+
+    def isSelected(self):
+        return self._is_selected
+
     def setSelected(self, selected):
         if self._is_selected != selected:
             self._is_selected = selected
             self.update()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton: self.setSelected(not self._is_selected)
         super().mousePressEvent(event)
+
     def paintEvent(self, event):
         super().paintEvent(event)
         if self._is_selected:
@@ -519,21 +646,23 @@ class ThumbnailWidget(QFrame):
             painter.setPen(pen)
             painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
 
+
 class PreviewItemWidget(QFrame):
     view_original_clicked = Signal(str)
     download_original_clicked = Signal(str)
+
     def __init__(self, url: str, serial: str, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.url = url
         self.setFrameShape(self.Shape.StyledPanel)
-        self.setFixedSize(160, 280)
-        self.thumb_size = QSize(150, 200)
+        self.setFixedSize(180, 320)
+        self.thumb_size = QSize(170, 240)
         v_layout = QVBoxLayout(self)
         v_layout.setContentsMargins(5, 5, 5, 5)
-        v_layout.setSpacing(4)
+        v_layout.setSpacing(2)
         num_label = QLabel(serial)
         num_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        num_label.setStyleSheet("font-weight: bold; color: #333;")
+        num_label.setMaximumHeight(10)
         self.image_label = QLabel("等待加载…")
         self.image_label.setFixedSize(self.thumb_size)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -541,8 +670,8 @@ class PreviewItemWidget(QFrame):
         btn_layout = QHBoxLayout()
         view_btn = QPushButton("查看原图")
         download_btn = QPushButton("原图下载")
-        view_btn.setMaximumWidth(70)
-        download_btn.setMaximumWidth(70)
+        view_btn.setMaximumWidth(80)
+        download_btn.setMaximumWidth(80)
         view_btn.clicked.connect(lambda: self.view_original_clicked.emit(self.url))
         download_btn.clicked.connect(lambda: self.download_original_clicked.emit(self.url))
         btn_layout.addItem(QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum))
@@ -552,15 +681,21 @@ class PreviewItemWidget(QFrame):
         v_layout.addWidget(num_label)
         v_layout.addWidget(self.image_label)
         v_layout.addLayout(btn_layout)
+
     def set_loading(self): self.image_label.setText("加载中...")
+
     def set_pixmap(self, pixmap: QPixmap):
-        scaled = pixmap.scaled(self.thumb_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        scaled = pixmap.scaled(self.thumb_size, Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
         self.image_label.setPixmap(scaled)
         self.image_label.setText("")
+
     def set_error(self): self.image_label.setText("加载失败")
 
+
 class ThumbnailViewerDialog(QDialog):
-    def __init__(self, thumbnail_data: List[Dict], parent: QWidget, image_manager: ImageDownloadManager, api_manager: APIManager):
+    def __init__(self, thumbnail_data: List[Dict], parent: QWidget, image_manager: ImageDownloadManager,
+                 api_manager: APIManager):
         super().__init__(parent)
         self.image_manager = image_manager
         self.api_manager = api_manager
@@ -571,7 +706,7 @@ class ThumbnailViewerDialog(QDialog):
         self.file_dialog = None
         album_title = thumbnail_data[0]['title'] if thumbnail_data else ""
         self.setWindowTitle(f"图集预览 (共 {len(thumbnail_data)} 张) - {album_title}")
-        self.resize(900, 700)
+        self.resize(1100, 700)
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         container = QWidget()
@@ -583,6 +718,7 @@ class ThumbnailViewerDialog(QDialog):
         self._populate_grid(thumbnail_data)
         self.scroll_area.verticalScrollBar().valueChanged.connect(self._check_visible_and_load)
         QTimer.singleShot(100, self._check_visible_and_load)
+
     def _populate_grid(self, thumbnail_data):
         for i, thumb_info in enumerate(thumbnail_data):
             item_widget = PreviewItemWidget(thumb_info['url'], thumb_info['serial'])
@@ -590,7 +726,9 @@ class ThumbnailViewerDialog(QDialog):
             item_widget.download_original_clicked.connect(self._on_download_original)
             row, col = divmod(i, 5)
             self.grid.addWidget(item_widget, row, col)
-            self.items_to_load.append({'widget': item_widget, 'url': thumb_info['url'], 'status': ThumbnailWidget.STATUS_PENDING})
+            self.items_to_load.append(
+                {'widget': item_widget, 'url': thumb_info['url'], 'status': ThumbnailWidget.STATUS_PENDING})
+
     def _check_visible_and_load(self):
         if self.is_closing: return
         scrollbar = self.scroll_area.verticalScrollBar()
@@ -602,19 +740,25 @@ class ThumbnailViewerDialog(QDialog):
             if not visible_rect.intersects(widget.geometry()): continue
             item['status'] = ThumbnailWidget.STATUS_LOADING
             widget.set_loading()
-            self.image_manager.download_image(item['url'], self, partial(self.set_grid_image, item), partial(self.set_grid_image_error, item))
+            self.image_manager.download_image(item['url'], self, partial(self.set_grid_image, item),
+                                              partial(self.set_grid_image_error, item))
+
     def set_grid_image(self, item, pixmap):
         if self.is_closing: return
         try:
             item['status'] = ThumbnailWidget.STATUS_LOADED
             if item['widget'].isVisible(): item['widget'].set_pixmap(pixmap)
-        except RuntimeError: pass
+        except RuntimeError:
+            pass
+
     def set_grid_image_error(self, item):
         if self.is_closing: return
         try:
             item['status'] = ThumbnailWidget.STATUS_FAILED
             if item['widget'].isVisible(): item['widget'].set_error()
-        except RuntimeError: pass
+        except RuntimeError:
+            pass
+
     def resizeEvent(self, event: QResizeEvent):
         super().resizeEvent(event)
         if not hasattr(self, 'resize_timer'):
@@ -622,7 +766,10 @@ class ThumbnailViewerDialog(QDialog):
             self.resize_timer.setSingleShot(True)
             self.resize_timer.timeout.connect(self._check_visible_and_load)
         self.resize_timer.start(150)
-    def _on_view_original(self, url: str): QDesktopServices.openUrl(QUrl(url))
+
+    def _on_view_original(self, url: str):
+        QDesktopServices.openUrl(QUrl(url))
+
     def _on_download_original(self, url: str):
         if self.single_downloader and self.single_downloader.isRunning():
             return QMessageBox.information(self, "提示", "已有另一个单张图片正在下载中。")
@@ -638,6 +785,7 @@ class ThumbnailViewerDialog(QDialog):
         self.file_dialog.selectFile(default_path)
         self.file_dialog.fileSelected.connect(lambda path: self._start_single_download(url, path))
         self.file_dialog.open()
+
     def _start_single_download(self, url: str, save_path: str):
         if not save_path: return
         try:
@@ -653,6 +801,7 @@ class ThumbnailViewerDialog(QDialog):
             self.download_progress_dialog.open()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"启动下载失败: {e}")
+
     def on_single_download_finished(self, success: bool, message: str):
         if self.download_progress_dialog:
             self.download_progress_dialog.close()
@@ -662,6 +811,7 @@ class ThumbnailViewerDialog(QDialog):
         elif message != "已取消":
             QMessageBox.warning(self, "下载失败", f"无法下载图片: {message}")
         self.single_downloader = None
+
     def closeEvent(self, event):
         self.is_closing = True
         self.image_manager.cancel_requests_for_owner(self)
@@ -670,11 +820,13 @@ class ThumbnailViewerDialog(QDialog):
         if self.file_dialog: self.file_dialog.close()
         super().closeEvent(event)
 
+
 class GalleryCrawler(QWidget):
     def __init__(self):
         super().__init__()
         self.api_manager = APIManager()
         self.image_manager = ImageDownloadManager()
+        self.download_directory = get_download_directory()
         self.current_page = 1
         self.total_pages = 1
         self.search_base_url = ""
@@ -687,8 +839,9 @@ class GalleryCrawler(QWidget):
         self.is_shutting_down = False
         self.init_ui()
         self.connect_signals()
-        self.setWindowTitle("Photo Album Downloader")
+        self.setWindowTitle("Dream Gallery Crawler")
         self.resize(1300, 800)
+
     def init_ui(self):
         root_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -698,11 +851,32 @@ class GalleryCrawler(QWidget):
         self.tabs.addTab(self.downloads_widget, "📥 下载管理 (0)")
         search_tab_layout = QVBoxLayout(search_widget)
         search_layout = QHBoxLayout()
+        self.updates_btn = QPushButton("每日更新")
+
+        ranking_layout = QHBoxLayout()
+        ranking_label = QLabel("排行榜:")
+        ranking_layout.addWidget(ranking_label)
+        self.ranking_combo = QComboBox()
+        for name, url in RANKINGS.items():
+            self.ranking_combo.addItem(name, url)
+        ranking_layout.addWidget(self.ranking_combo)
+
+        tag_label = QLabel("标签:")
+        ranking_layout.addWidget(tag_label)
+        self.tag_combo = QComboBox()
+        for name, url in TAGS.items():
+            self.tag_combo.addItem(name, url)
+        ranking_layout.addWidget(self.tag_combo)
+        ranking_layout.addStretch()
+
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("输入关键词搜索或直接粘贴网址...")
+        self.search_input.setPlaceholderText("输入关键词搜索或直接粘贴图集网址...")
         self.search_btn = QPushButton("搜索")
+        search_layout.addWidget(self.updates_btn)
+        search_layout.addLayout(ranking_layout)
         search_layout.addWidget(self.search_input)
         search_layout.addWidget(self.search_btn)
+
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #f0f0f0; }")
@@ -711,6 +885,7 @@ class GalleryCrawler(QWidget):
         self.grid_layout.setSpacing(15)
         container.setStyleSheet("background-color: #f0f0f0;")
         self.scroll_area.setWidget(container)
+
         bottom_layout = QHBoxLayout()
         self.prev_btn, self.next_btn, self.go_btn = QPushButton("上一页"), QPushButton("下一页"), QPushButton("跳转")
         self.page_label = QLabel("第 1 / 1 页")
@@ -731,29 +906,48 @@ class GalleryCrawler(QWidget):
         bottom_layout.addSpacing(10)
         bottom_layout.addWidget(self.page_input)
         bottom_layout.addWidget(self.go_btn)
+
         search_tab_layout.addLayout(search_layout)
         search_tab_layout.addWidget(self.scroll_area)
         search_tab_layout.addLayout(bottom_layout)
         dl_layout = QVBoxLayout(self.downloads_widget)
+
+        dir_layout = QHBoxLayout()
+        dir_label = QLabel("下载目录:")
+        self.dir_path_label = QLabel(self.download_directory)
+        self.dir_path_label.setStyleSheet("color: #666;")
+        self.select_dir_btn = QPushButton("选择目录")
+        self.open_dir_btn = QPushButton("打开目录")
+        dir_layout.addWidget(dir_label)
+        dir_layout.addWidget(self.dir_path_label)
+        dir_layout.addStretch()
+        dir_layout.addWidget(self.select_dir_btn)
+        dir_layout.addWidget(self.open_dir_btn)
+        dl_layout.addLayout(dir_layout)
+
         self.download_tree = QTreeWidget()
         self.download_tree.setHeaderLabels(["标题", "状态", "进度", "作者"])
         self.download_tree.setColumnWidth(0, 400)
         self.download_tree.setColumnWidth(1, 120)
         self.download_tree.setColumnWidth(2, 200)
         self.download_tree.setColumnWidth(3, 150)
+        dl_layout.addWidget(self.download_tree)
+
         dl_btn_layout = QHBoxLayout()
-        self.btn_cancel_all, self.btn_cancel_selected, self.btn_clear_finished = QPushButton("全部取消"), QPushButton("取消选中"), QPushButton("清除已完成")
+        self.btn_cancel_all, self.btn_cancel_selected, self.btn_clear_finished = QPushButton("全部取消"), QPushButton(
+            "取消选中"), QPushButton("清除已完成")
         dl_btn_layout.addStretch()
         dl_btn_layout.addWidget(self.btn_cancel_all)
         dl_btn_layout.addWidget(self.btn_cancel_selected)
         dl_btn_layout.addWidget(self.btn_clear_finished)
-        dl_layout.addWidget(self.download_tree)
         dl_layout.addLayout(dl_btn_layout)
         self.status_bar = QStatusBar()
         root_layout.addWidget(self.tabs)
         root_layout.addWidget(self.status_bar)
         self.set_status_message("就绪")
+
     def connect_signals(self):
+        self.updates_btn.clicked.connect(self.fetch_daily_updates)
         self.search_input.returnPressed.connect(self.start_search)
         self.search_btn.clicked.connect(self.start_search)
         self.scroll_area.verticalScrollBar().valueChanged.connect(self._check_visible_and_load)
@@ -767,17 +961,79 @@ class GalleryCrawler(QWidget):
         self.btn_cancel_all.clicked.connect(self.cancel_all_downloads)
         self.btn_cancel_selected.clicked.connect(self.cancel_selected_downloads)
         self.btn_clear_finished.clicked.connect(self.clear_finished_downloads)
+        self.select_dir_btn.clicked.connect(self.select_download_directory)
+        self.open_dir_btn.clicked.connect(self.open_download_directory)
+        self.ranking_combo.currentIndexChanged.connect(self.fetch_ranking_updates)
+        self.tag_combo.currentIndexChanged.connect(self.fetch_tag_updates)
         self.api_manager.search_results_ready.connect(self.on_search_results_ready)
         self.api_manager.page_results_ready.connect(self.on_page_fetch_ready)
         self.api_manager.gallery_info_ready.connect(self.on_single_gallery_ready)
         self.api_manager.thumbnail_urls_ready.connect(self.on_thumbnail_urls_ready)
         self.api_manager.all_pages_results_ready.connect(self.on_all_results_fetched)
         self.api_manager.error.connect(self.on_worker_error)
+
+    def select_download_directory(self):
+        """Opens a dialog to select the download directory."""
+        directory = QFileDialog.getExistingDirectory(self, "选择下载目录", self.download_directory)
+        if directory:
+            self.download_directory = directory
+            self.dir_path_label.setText(self.download_directory)
+            self.set_status_message(f"下载目录已更新为: {self.download_directory}")
+
+    def open_download_directory(self):
+        """Opens the download directory in the file explorer."""
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self.download_directory))
+
+    def fetch_tag_updates(self, index):
+        """Fetches updates from a selected tag category."""
+        url_path = self.tag_combo.itemData(index)
+        if not url_path:
+            return
+
+        self.set_loading_state(True)
+        self.set_status_message(f"正在加载标签: {self.tag_combo.itemText(index)}...")
+        self._clear_grid()
+        self.current_page = 1
+        self.total_pages = 1
+        tag_url = urljoin(BASE_URL, url_path)
+        self.search_base_url = tag_url
+        self.api_manager.fetch_page(self.search_base_url, self.current_page)
+
+    def fetch_ranking_updates(self, index):
+        """Fetches updates from a selected ranking category."""
+        url_path = self.ranking_combo.itemData(index)
+        if not url_path:
+            return
+
+        self.set_loading_state(True)
+        self.set_status_message(f"正在加载 {self.ranking_combo.itemText(index)}...")
+        self._clear_grid()
+        self.current_page = 1
+        self.total_pages = 1
+        ranking_url = urljoin(BASE_URL, url_path)
+        self.search_base_url = ranking_url
+        self.api_manager.fetch_page(self.search_base_url, self.current_page)
+
+    def fetch_daily_updates(self):
+        """Fetches the first page of the daily updates section."""
+        self.set_loading_state(True)
+        self.set_status_message("正在加载每日更新...")
+        self._clear_grid()
+        self.current_page = 1
+        self.total_pages = 1
+        updates_url = urljoin(BASE_URL, GALLERY)
+        self.search_base_url = updates_url
+        self.api_manager.fetch_page(self.search_base_url, self.current_page)
+
     def set_loading_state(self, loading):
         self.search_btn.setEnabled(not loading)
+        self.updates_btn.setEnabled(not loading)
         self.scroll_area.setEnabled(not loading)
         self.set_status_message("正在加载..." if loading else "加载完成")
-    def set_status_message(self, message, timeout=5000): self.status_bar.showMessage(message, timeout)
+
+    def set_status_message(self, message, timeout=5000):
+        self.status_bar.showMessage(message, timeout)
+
     def update_pagination_controls(self):
         is_multi_page = self.total_pages > 1
         self.prev_btn.setEnabled(is_multi_page and self.current_page > 1)
@@ -785,12 +1041,14 @@ class GalleryCrawler(QWidget):
         self.page_label.setText(f"第 {self.current_page} / {self.total_pages} 页")
         self.page_input.setEnabled(is_multi_page)
         self.go_btn.setEnabled(is_multi_page)
+
     def _clear_grid(self):
         self.image_manager.cancel_requests_for_owner(self)
         while (item := self.grid_layout.takeAt(0)):
             if widget := item.widget():
                 widget.deleteLater()
         self.thumbnail_widgets.clear()
+
     def _populate_grid(self, results):
         self._clear_grid()
         for i, item_data in enumerate(results):
@@ -798,9 +1056,10 @@ class GalleryCrawler(QWidget):
             thumb_widget.download_btn.clicked.connect(partial(self._add_to_download_queue, [item_data]))
             thumb_widget.preview_btn.clicked.connect(partial(self.show_album_thumbnails, item_data))
             self.thumbnail_widgets.append(thumb_widget)
-            row, col = divmod(i, 5)
+            row, col = divmod(i, (self.scroll_area.width() - 30) // 235 or 1)
             self.grid_layout.addWidget(thumb_widget, row, col)
         QTimer.singleShot(100, self._check_visible_and_load)
+
     def _check_visible_and_load(self):
         viewport = self.scroll_area.viewport()
         global_viewport_rect = QRect(viewport.mapToGlobal(QPoint(0, 0)), viewport.size())
@@ -810,27 +1069,36 @@ class GalleryCrawler(QWidget):
             if not global_viewport_rect.intersects(global_widget_rect): continue
             widget.load_status = ThumbnailWidget.STATUS_LOADING
             widget.img_label.setText("加载中...")
-            self.image_manager.download_image(widget.item_data['img'], self, partial(self.set_grid_image, widget), partial(self.set_grid_image_error, widget))
+            self.image_manager.download_image(widget.item_data['img'], self, partial(self.set_grid_image, widget),
+                                              partial(self.set_grid_image_error, widget))
+
     def set_grid_image(self, widget, pixmap):
         try:
             if widget and widget.isVisible():
                 widget.load_status = ThumbnailWidget.STATUS_LOADED
-                scaled = pixmap.scaled(widget.img_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                scaled = pixmap.scaled(widget.img_label.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                       Qt.TransformationMode.SmoothTransformation)
                 widget.img_label.setPixmap(scaled)
                 widget.img_label.setText("")
-        except RuntimeError: pass
+        except RuntimeError:
+            pass
+
     def set_grid_image_error(self, widget):
         try:
             if widget and widget.isVisible():
                 widget.load_status = ThumbnailWidget.STATUS_FAILED
                 widget.img_label.setText("加载失败")
-        except RuntimeError: pass
+        except RuntimeError:
+            pass
+
     def start_search(self):
         if not (query := self.search_input.text().strip()): return
         self.set_loading_state(True)
         self._clear_grid()
         self.current_page = 1
+        self.total_pages = 1
         self.api_manager.search(query)
+
     def on_search_results_ready(self, items, total_pages, base_url):
         if self.is_shutting_down: return
         self.set_loading_state(False)
@@ -839,13 +1107,16 @@ class GalleryCrawler(QWidget):
         self.current_results = items
         self._populate_grid(items)
         self.update_pagination_controls()
+
     def on_page_fetch_ready(self, items, total_pages):
         if self.is_shutting_down: return
         self.set_loading_state(False)
-        self.total_pages = max(self.total_pages, total_pages)
+        self.total_pages = total_pages
         self.current_results = items
         self._populate_grid(items)
         self.update_pagination_controls()
+        self.scroll_area.verticalScrollBar().setValue(0)
+
     def on_single_gallery_ready(self, results):
         if self.is_shutting_down: return
         self.set_loading_state(False)
@@ -854,6 +1125,7 @@ class GalleryCrawler(QWidget):
         self.current_results = results
         self._populate_grid(results)
         self.update_pagination_controls()
+
     def on_thumbnail_urls_ready(self, urls):
         if self.is_shutting_down:
             return
@@ -871,7 +1143,7 @@ class GalleryCrawler(QWidget):
                 return
 
             thumbnail_data = [{"url": url, "serial": str(i), "title": self.last_previewed_item['ztitle']}
-                            for i, url in enumerate(urls, 1) if url]
+                              for i, url in enumerate(urls, 1) if url]
 
             if not thumbnail_data:
                 QMessageBox.warning(self, "警告", "缩略图数据为空")
@@ -885,7 +1157,6 @@ class GalleryCrawler(QWidget):
                 QMessageBox.critical(self, "错误", f"预览窗口创建失败: {e}")
 
     def _create_thumbnail_viewer(self, thumbnail_data):
-        """在主线程中安全创建预览窗口"""
         try:
             if self.is_shutting_down:
                 return
@@ -898,55 +1169,71 @@ class GalleryCrawler(QWidget):
         except Exception as e:
             logger.error(f"Error creating thumbnail viewer: {e}")
             QMessageBox.critical(self, "错误", f"无法创建预览窗口: {e}")
+
     def on_all_results_fetched(self, items):
         if self.is_shutting_down: return
         if hasattr(self, 'progress_dialog'): self.progress_dialog.close()
         self.set_status_message(f"成功获取 {len(items)} 个画册，正在加入队列...")
         self._add_to_download_queue(items)
+
     def on_worker_error(self, message):
         if self.is_shutting_down: return
         self.set_loading_state(False)
         if hasattr(self, 'progress_dialog') and self.progress_dialog.isVisible(): self.progress_dialog.close()
         QMessageBox.critical(self, "错误", message)
         self.update_pagination_controls()
+
     def prev_page(self):
         if self.current_page > 1: self.fetch_page_data(self.current_page - 1)
+
     def next_page(self):
         if self.current_page < self.total_pages: self.fetch_page_data(self.current_page + 1)
+
     def go_to_page(self):
         try:
             page = int(self.page_input.text())
             if 1 <= page <= self.total_pages: self.fetch_page_data(page)
-        except ValueError: pass
-        finally: self.page_input.clear()
+        except ValueError:
+            pass
+        finally:
+            self.page_input.clear()
+
     def fetch_page_data(self, page):
         self.set_loading_state(True)
         self._clear_grid()
         self.current_page = page
         self.api_manager.fetch_page(self.search_base_url, page)
+
     def show_album_thumbnails(self, item_data):
         count = int(item_data.get("count", 0))
         if not count: return QMessageBox.information(self, "提示", "该图集图片数量为0。")
         self.last_previewed_item = item_data
         self.api_manager.fetch_thumbnail_urls(item_data["ztitle_href"], count)
+
     def download_selected(self):
         selected_data = [widget.item_data for widget in self.thumbnail_widgets if widget.isSelected()]
         if not selected_data: return QMessageBox.warning(self, "提示", "请先点击选择要下载的图集。")
         self._add_to_download_queue(selected_data)
+
     def download_all_on_page(self):
         if not self.current_results: return QMessageBox.information(self, "提示", "当前页面没有可下载的项目。")
         self._add_to_download_queue(self.current_results)
+
     def download_all_results(self):
-        if not self.search_base_url or self.total_pages <= 1: return QMessageBox.warning(self, "提示", "请先执行一次多页搜索。")
-        reply = QMessageBox.question(self, "确认", f"即将从 {self.total_pages} 个页面获取所有画册信息并下载，确定吗？", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if not self.search_base_url or self.total_pages <= 1: return QMessageBox.warning(self, "提示",
+                                                                                         "请先执行一次多页搜索或浏览每日更新。")
+        reply = QMessageBox.question(self, "确认", f"即将从 {self.total_pages} 个页面获取所有画册信息并下载，确定吗？",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.No: return
-        self.progress_dialog = QProgressDialog(f"正在从 {self.total_pages} 个页面获取信息...", "取消", 0, self.total_pages, self)
+        self.progress_dialog = QProgressDialog(f"正在从 {self.total_pages} 个页面获取信息...", "取消", 0,
+                                               self.total_pages, self)
         self.progress_dialog.setWindowTitle("获取全部结果")
         self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self.api_manager.all_pages_progress.connect(self.progress_dialog.setValue)
         self.progress_dialog.canceled.connect(self.api_manager.cancel_all)
         self.api_manager.fetch_all_pages(self.search_base_url, self.total_pages)
         self.progress_dialog.exec()
+
     def _add_to_download_queue(self, items_data):
         added_count = 0
         for item_data in items_data:
@@ -968,20 +1255,23 @@ class GalleryCrawler(QWidget):
             self.process_download_queue()
         else:
             self.set_status_message("所有选中项已在队列中或图片数为0")
+
     def process_download_queue(self):
         self.update_downloads_tab_title()
         while len(self.active_download_workers) < MAX_CONCURRENT_DOWNLOADS and self.download_task_queue:
             task_item = self.download_task_queue.popleft()
             task_item.setText(1, "下载中")
-            worker = DownloadWorker(task_item)
+            worker = DownloadWorker(task_item, self.download_directory)
             worker.progress.connect(self.on_download_progress)
             worker.finished.connect(self.on_download_finished)
             worker.finished.connect(worker.deleteLater)
             self.active_download_workers[task_item] = worker
             worker.start()
+
     def on_download_progress(self, task_item, percentage):
         if pb := self.download_tree.itemWidget(task_item, 2):
             pb.setValue(percentage)
+
     def on_download_finished(self, task_item, message, is_success):
         if task_item in self.active_download_workers: del self.active_download_workers[task_item]
         if self.is_shutting_down: return
@@ -992,18 +1282,22 @@ class GalleryCrawler(QWidget):
             pb.setFormat("成功" if is_success else "失败")
             pb.setTextVisible(True)
         self.process_download_queue()
+
     def cancel_all_downloads(self):
         for worker in self.active_download_workers.values(): worker.cancel()
         for item in self.download_task_queue: item.setText(1, "已取消")
         self.download_task_queue.clear()
         self.update_downloads_tab_title()
+
     def cancel_selected_downloads(self):
         for item in self.download_tree.selectedItems():
-            if item in self.active_download_workers: self.active_download_workers[item].cancel()
+            if item in self.active_download_workers:
+                self.active_download_workers[item].cancel()
             elif item in self.download_task_queue:
                 self.download_task_queue.remove(item)
                 item.setText(1, "已取消")
         self.update_downloads_tab_title()
+
     def clear_finished_downloads(self):
         for i in range(self.download_tree.topLevelItemCount() - 1, -1, -1):
             item = self.download_tree.topLevelItem(i)
@@ -1011,9 +1305,11 @@ class GalleryCrawler(QWidget):
                 if url := item.data(0, Qt.ItemDataRole.UserRole).get("url"):
                     if url in self.task_map: del self.task_map[url]
                 self.download_tree.takeTopLevelItem(i)
+
     def update_downloads_tab_title(self):
         total = len(self.download_task_queue) + len(self.active_download_workers)
         self.tabs.setTabText(1, f"📥 下载管理 ({total})")
+
     def shutdown_all_workers(self):
         self.is_shutting_down = True
         self.set_status_message("正在关闭，请稍候...", timeout=0)
@@ -1029,19 +1325,23 @@ class GalleryCrawler(QWidget):
                 thread.wait(3000)
         logger.info("All threads have been terminated.")
         self.set_status_message("关闭完成")
+
     def closeEvent(self, event):
         if self.is_shutting_down:
             event.ignore()
             return
         active_tasks = len(self.active_download_workers) + len(self.download_task_queue)
         if active_tasks > 0:
-            reply = QMessageBox.question(self, '退出确认', f"有 {active_tasks} 个任务仍在进行中，确定要退出吗？\n（程序将等待当前下载请求完成后关闭）",
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            reply = QMessageBox.question(self, '退出确认',
+                                         f"有 {active_tasks} 个任务仍在进行中，确定要退出吗？\n（程序将等待当前下载请求完成后关闭）",
+                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                         QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.No:
                 event.ignore()
                 return
         self.shutdown_all_workers()
         event.accept()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
