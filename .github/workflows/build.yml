@@ -59,7 +59,6 @@ jobs:
           sips -z 256 256 icon.png --out icon.iconset/icon_256x256.png
           sips -z 512 512 icon.png --out icon.iconset/icon_256x256@2x.png
           iconutil -c icns icon.iconset
-          mv icon.icns icon_macos.icns
 
       - name: Build Executable (Windows)
         if: matrix.os == 'windows-latest'
@@ -69,14 +68,14 @@ jobs:
       - name: Build Executable (macOS)
         if: contains(matrix.os, 'macos')
         run: |
-          pyinstaller --onefile --windowed --icon=icon_macos.icns --name=downloader --distpath=dist photograph.py
+          pyinstaller --onefile --windowed --icon=icon.icns --name=downloader --distpath=dist photograph.py
 
       - name: Create DMG (macOS)
         if: contains(matrix.os, 'macos')
         run: |
           mkdir -p dist/downloader.app/Contents/{MacOS,Resources}
           mv dist/downloader dist/downloader.app/Contents/MacOS/
-          cp icon_macos.icns dist/downloader.app/Contents/Resources/icon.icns
+          cp icon.icns dist/downloader.app/Contents/Resources/icon.icns
           cat > dist/downloader.app/Contents/Info.plist << EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -102,7 +101,7 @@ jobs:
           </plist>
           EOF
           chmod +x dist/downloader.app/Contents/MacOS/downloader
-          create-dmg --volname "downloader-${{ matrix.arch }}" --volicon icon_macos.icns --window-pos 200 120 --window-size 600 400 --icon-size 100 --icon "downloader.app" 175 190 --hide-extension "downloader.app" --app-drop-link 425 190 dist/${{ matrix.artifact_name }} dist/downloader.app
+          create-dmg --volname "downloader-${{ matrix.arch }}" --volicon icon.icns --window-pos 200 120 --window-size 600 400 --icon-size 100 --icon "downloader.app" 175 190 --hide-extension "downloader.app" --app-drop-link 425 190 dist/${{ matrix.artifact_name }} dist/downloader.app
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

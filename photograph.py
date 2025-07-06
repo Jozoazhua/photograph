@@ -333,9 +333,9 @@ class GalleryWorker(BaseWorker):
 class ThumbnailWorker(BaseWorker):
     urls_ready = Signal(list)
 
-    def __init__(self, url, count):
+    def __init__(self, url, count, callback=None):
         super().__init__()
-        self.url, self.count = url, count
+        self.url, self.count, self.callback = url, count, callback
 
     def run(self):
         session = WebScraper.get_session()
@@ -344,13 +344,20 @@ class ThumbnailWorker(BaseWorker):
             response = session.get(self.url, timeout=10)
             soup = BeautifulSoup(response.text, "html.parser")
             if not (tag := soup.select_one("div.gallerypic img")) or not (src := tag.get("src")):
-                return self.urls_ready.emit([])
-            if not (match := re.search(r'/(\d+)(\.\w+)$', src)):
-                return self.urls_ready.emit([src])
-            num_str, ext = match.groups()
-            start_num, padding = int(num_str), len(num_str)
-            base = urljoin(self.url, src.rsplit('/', 1)[0])
-            self.urls_ready.emit([f"{base}/{i:0{padding}d}{ext}" for i in range(start_num, start_num + self.count)])
+                urls = []
+            elif not (match := re.search(r'/(\d+)(\.\w+)$', src)):
+                urls = [src]
+            else:
+                num_str, ext = match.groups()
+                start_num, padding = int(num_str), len(num_str)
+                base = urljoin(self.url, src.rsplit('/', 1)[0])
+                urls = [f"{base}/{i:0{padding}d}{ext}" for i in range(start_num, start_num + self.count)]
+
+            if self.callback:
+                self.callback(urls)
+            else:
+                self.urls_ready.emit(urls)
+
         except Exception as e:
             if not self.is_cancelled: self.error.emit(f"获取缩略图网址错误: {e}")
 
@@ -617,10 +624,10 @@ class ThumbnailWidget(QFrame):
         info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info_label.setStyleSheet("color: #666;")
         btn_layout = QHBoxLayout()
-        self.preview_btn = QPushButton("预览")
-        self.download_btn = QPushButton("下载")
+        self.preview_btn = QPushButton("预览图")
+        self.original_image_btn = QPushButton("原图集")
         btn_layout.addWidget(self.preview_btn)
-        btn_layout.addWidget(self.download_btn)
+        btn_layout.addWidget(self.original_image_btn)
         layout.addWidget(title_label)
         layout.addWidget(self.img_label)
         layout.addWidget(info_label)
@@ -645,6 +652,102 @@ class ThumbnailWidget(QFrame):
             pen = QPen(QColor("#4F86F7"), 3)
             painter.setPen(pen)
             painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
+
+
+class OriginalImageViewer(QDialog):
+    def __init__(self, image_urls: List[str], title: str, count: int, parent: QWidget,
+                 image_manager: ImageDownloadManager):
+        super().__init__(parent)
+        self.image_manager = image_manager
+        self.urls = image_urls
+        self.image_widgets = []
+        self.is_closing = False
+
+        self.setWindowTitle(f"原图查看 (共 {count} 张) - {title}")
+        self.setWindowState(Qt.WindowState.WindowMaximized)
+
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; background-color: #333; }")
+
+        container = QWidget()
+        container.setStyleSheet("background-color: #333;")
+        self.scroll_area.setWidget(container)
+
+        self.layout = QVBoxLayout(container)
+        self.layout.setSpacing(20)
+        self.layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        dialog_layout = QVBoxLayout(self)
+        dialog_layout.setContentsMargins(0, 0, 0, 0)
+        dialog_layout.addWidget(self.scroll_area)
+
+        self._populate_layout()
+
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._check_visible_and_load)
+        QTimer.singleShot(100, self._check_visible_and_load)
+
+    def _populate_layout(self):
+        for i, url in enumerate(self.urls):
+            image_label = QLabel(f"图片 {i + 1} 加载中...")
+            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            image_label.setMinimumSize(200, 200)
+            image_label.setStyleSheet("color: white; border: 1px dashed #888; border-radius: 5px;")
+            self.layout.addWidget(image_label)
+            self.image_widgets.append({
+                'widget': image_label,
+                'url': url,
+                'status': ThumbnailWidget.STATUS_PENDING
+            })
+
+    def _check_visible_and_load(self):
+        if self.is_closing: return
+        scrollbar = self.scroll_area.verticalScrollBar()
+        viewport = self.scroll_area.viewport()
+        visible_rect = QRect(0, scrollbar.value(), viewport.width(), viewport.height())
+
+        for item in self.image_widgets:
+            if item['status'] == ThumbnailWidget.STATUS_PENDING:
+                widget = item['widget']
+                if visible_rect.intersects(widget.geometry()):
+                    item['status'] = ThumbnailWidget.STATUS_LOADING
+                    self.image_manager.download_image(
+                        item['url'], self,
+                        partial(self.set_image, item),
+                        partial(self.set_image_error, item)
+                    )
+
+    def set_image(self, item, pixmap: QPixmap):
+        if self.is_closing: return
+        try:
+            widget = item['widget']
+            item['status'] = ThumbnailWidget.STATUS_LOADED
+
+            window_width = self.scroll_area.width() - 40
+            scaled_pixmap = pixmap.scaledToWidth(window_width, Qt.TransformationMode.SmoothTransformation)
+            widget.setPixmap(scaled_pixmap)
+            widget.setFixedSize(scaled_pixmap.size())
+            widget.setStyleSheet("border: none;")
+
+        except RuntimeError:
+            pass
+
+    def set_image_error(self, item):
+        if self.is_closing: return
+        try:
+            item['status'] = ThumbnailWidget.STATUS_FAILED
+            item['widget'].setText("图片加载失败")
+        except RuntimeError:
+            pass
+
+    def closeEvent(self, event):
+        self.is_closing = True
+        self.image_manager.cancel_requests_for_owner(self)
+        super().closeEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Escape:
+            self.close()
 
 
 class PreviewItemWidget(QFrame):
@@ -1053,7 +1156,7 @@ class GalleryCrawler(QWidget):
         self._clear_grid()
         for i, item_data in enumerate(results):
             thumb_widget = ThumbnailWidget(item_data)
-            thumb_widget.download_btn.clicked.connect(partial(self._add_to_download_queue, [item_data]))
+            thumb_widget.original_image_btn.clicked.connect(partial(self.show_original_images, item_data))
             thumb_widget.preview_btn.clicked.connect(partial(self.show_album_thumbnails, item_data))
             self.thumbnail_widgets.append(thumb_widget)
             row, col = divmod(i, (self.scroll_area.width() - 30) // 235 or 1)
@@ -1208,6 +1311,41 @@ class GalleryCrawler(QWidget):
         count = int(item_data.get("count", 0))
         if not count: return QMessageBox.information(self, "提示", "该图集图片数量为0。")
         self.last_previewed_item = item_data
+        self.api_manager.fetch_thumbnail_urls(item_data["ztitle_href"], count)
+
+    def show_original_images(self, item_data):
+        count = int(item_data.get("count", 0))
+        if not count: return QMessageBox.information(self, "提示", "该图集图片数量为0。")
+
+        self.set_status_message("正在获取原图地址...")
+
+        try:
+            self.api_manager.thumbnail_urls_ready.disconnect(self.on_thumbnail_urls_ready)
+        except (TypeError, RuntimeError):
+            logger.warning("Could not disconnect on_thumbnail_urls_ready. It might have not been connected.")
+            pass
+
+        def on_urls_ready_for_original_viewer(urls):
+            try:
+                self.api_manager.thumbnail_urls_ready.disconnect(on_urls_ready_for_original_viewer)
+            except (TypeError, RuntimeError):
+                pass
+
+            self.api_manager.thumbnail_urls_ready.connect(self.on_thumbnail_urls_ready)
+
+            if self.is_shutting_down: return
+
+            if not urls:
+                self.set_status_message("就绪")
+                QMessageBox.warning(self, "错误", "无法获取图片地址列表。")
+                return
+
+            self.set_status_message("获取完毕，正在打开查看器...")
+            viewer = OriginalImageViewer(urls, item_data['ztitle'], count, self, self.image_manager)
+            viewer.exec()
+            self.set_status_message("就绪")
+
+        self.api_manager.thumbnail_urls_ready.connect(on_urls_ready_for_original_viewer)
         self.api_manager.fetch_thumbnail_urls(item_data["ztitle_href"], count)
 
     def download_selected(self):
