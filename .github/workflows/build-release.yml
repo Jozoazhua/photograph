@@ -1,10 +1,12 @@
-name: Build
+name: Build and Release
 
 on:
-  push:
-    tags:
-      - 'x*'
-  workflow_dispatch:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
   build:
@@ -106,3 +108,24 @@ jobs:
         with:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.artifact_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create Release and Upload
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/**/*.exe
+            dist/**/*.dmg
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
