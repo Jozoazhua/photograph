@@ -194,7 +194,7 @@ class ImageLoadWorker(BaseWorker):
         session = WebScraper.get_session()
         try:
             if self.is_cancelled: return
-            response = session.get(self.url, timeout=10)
+            response = session.get(self.url, timeout=15)
             response.raise_for_status()
             pixmap = QPixmap()
             if pixmap.loadFromData(response.content):
@@ -375,18 +375,34 @@ class DownloadWorker(BaseWorker):
         self.url = data["url"]
         self.total_count = data["count"]
         self.download_dir = download_dir
+        self.is_paused = False
+
+    def pause(self):
+        self.is_paused = True
+        if self.task_item.text(1) == "下载中":
+            self.task_item.setText(1, "已暂停")
+
+    def resume(self):
+        self.is_paused = False
+        if self.task_item.text(1) == "已暂停":
+            self.task_item.setText(1, "下载中")
 
     def run(self):
         self.session = WebScraper.get_session()
         try:
             if not (urls := self._get_image_urls()):
                 return self.finished.emit(self.task_item, "链接获取失败", False)
-            safe_author = re.sub(r'[\/*?:"<>|]', "", self.author)
-            safe_title = re.sub(r'[\/*?:"<>|]', "", self.title)
+            safe_author = re.sub(r'[\\/*?:"<>|]', "", self.author)
+            safe_title = re.sub(r'[\\/*?:"<>|]', "", self.title)
             album_dir = os.path.join(self.download_dir, safe_author, safe_title)
             os.makedirs(album_dir, exist_ok=True)
             total, success = len(urls), 0
             for i, url in enumerate(urls):
+                while self.is_paused:
+                    if self.is_cancelled:
+                        return self.finished.emit(self.task_item, "已取消", False)
+                    time.sleep(0.5)
+
                 if self.is_cancelled: return self.finished.emit(self.task_item, "已取消", False)
                 ext = os.path.splitext(urlparse(url).path)[1] or ".jpg"
                 filename = os.path.join(album_dir, f"{i + 1:04d}{ext}")
@@ -414,6 +430,9 @@ class DownloadWorker(BaseWorker):
                 r.raise_for_status()
                 with open(filepath, "wb") as f:
                     for chunk in r.iter_content(8192):
+                        while self.is_paused:
+                            if self.is_cancelled: return False
+                            time.sleep(0.5)
                         if self.is_cancelled: return False
                         f.write(chunk)
             return True
@@ -1029,19 +1048,22 @@ class GalleryCrawler(QWidget):
         dl_layout.addLayout(dir_layout)
 
         self.download_tree = QTreeWidget()
-        self.download_tree.setHeaderLabels(["标题", "状态", "进度", "作者"])
+        self.download_tree.setHeaderLabels(["标题", "状态", "进度", "作者", "操作"])
         self.download_tree.setColumnWidth(0, 400)
         self.download_tree.setColumnWidth(1, 120)
         self.download_tree.setColumnWidth(2, 200)
         self.download_tree.setColumnWidth(3, 150)
+        self.download_tree.setColumnWidth(4, 150)
         dl_layout.addWidget(self.download_tree)
 
         dl_btn_layout = QHBoxLayout()
-        self.btn_cancel_all, self.btn_cancel_selected, self.btn_clear_finished = QPushButton("全部取消"), QPushButton(
-            "取消选中"), QPushButton("清除已完成")
+        self.btn_pause_all = QPushButton("全部暂停")
+        self.btn_resume_all = QPushButton("全部开始")
+        self.btn_cancel_all, self.btn_clear_finished = QPushButton("全部取消"), QPushButton("清除已完成")
         dl_btn_layout.addStretch()
+        dl_btn_layout.addWidget(self.btn_resume_all)
+        dl_btn_layout.addWidget(self.btn_pause_all)
         dl_btn_layout.addWidget(self.btn_cancel_all)
-        dl_btn_layout.addWidget(self.btn_cancel_selected)
         dl_btn_layout.addWidget(self.btn_clear_finished)
         dl_layout.addLayout(dl_btn_layout)
         self.status_bar = QStatusBar()
@@ -1061,8 +1083,9 @@ class GalleryCrawler(QWidget):
         self.btn_download_selected.clicked.connect(self.download_selected)
         self.btn_download_all_on_page.clicked.connect(self.download_all_on_page)
         self.btn_download_all_results.clicked.connect(self.download_all_results)
+        self.btn_pause_all.clicked.connect(self.pause_all_downloads)
+        self.btn_resume_all.clicked.connect(self.resume_all_downloads)
         self.btn_cancel_all.clicked.connect(self.cancel_all_downloads)
-        self.btn_cancel_selected.clicked.connect(self.cancel_selected_downloads)
         self.btn_clear_finished.clicked.connect(self.clear_finished_downloads)
         self.select_dir_btn.clicked.connect(self.select_download_directory)
         self.open_dir_btn.clicked.connect(self.open_download_directory)
@@ -1074,6 +1097,52 @@ class GalleryCrawler(QWidget):
         self.api_manager.thumbnail_urls_ready.connect(self.on_thumbnail_urls_ready)
         self.api_manager.all_pages_results_ready.connect(self.on_all_results_fetched)
         self.api_manager.error.connect(self.on_worker_error)
+
+    def _add_item_actions(self, task_item):
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(5, 0, 5, 0)
+        layout.setSpacing(5)
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setObjectName("cancel_btn")
+        open_dir_btn = QPushButton("打开目录")
+        open_dir_btn.setObjectName("open_dir_btn")
+        open_dir_btn.hide()
+
+        cancel_btn.clicked.connect(lambda: self._cancel_single_download(task_item))
+        open_dir_btn.clicked.connect(lambda: self._open_item_directory(task_item))
+
+        layout.addWidget(cancel_btn)
+        layout.addWidget(open_dir_btn)
+        layout.addStretch()
+        widget.setLayout(layout)
+
+        self.download_tree.setItemWidget(task_item, 4, widget)
+
+    def _get_item_action_widget(self, task_item, action_name):
+        if widget := self.download_tree.itemWidget(task_item, 4):
+            return widget.findChild(QPushButton, action_name)
+        return None
+
+    def _cancel_single_download(self, item):
+        if item in self.active_download_workers:
+            self.active_download_workers[item].cancel()
+        elif item in self.download_task_queue:
+            try:
+                self.download_task_queue.remove(item)
+            except ValueError:
+                pass  # May have already been processed
+            item.setText(1, "已取消")
+        self.update_downloads_tab_title()
+
+    def _open_item_directory(self, item):
+        author = item.text(3)
+        title = item.text(0)
+        safe_author = re.sub(r'[\\/*?:"<>|]', "", author)
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
+        album_dir = os.path.join(self.download_directory, safe_author, safe_title)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(album_dir))
 
     def select_download_directory(self):
         """Opens a dialog to select the download directory."""
@@ -1384,6 +1453,7 @@ class GalleryCrawler(QWidget):
             progress_bar.setTextVisible(False)
             self.download_tree.addTopLevelItem(task_item)
             self.download_tree.setItemWidget(task_item, 2, progress_bar)
+            self._add_item_actions(task_item)
             self.download_task_queue.append(task_item)
             self.task_map[url] = task_item
             added_count += 1
@@ -1392,13 +1462,20 @@ class GalleryCrawler(QWidget):
             self.set_status_message(f"已添加 {added_count} 个新任务")
             self.process_download_queue()
         else:
-            self.set_status_message("所有选中项已在队列中或图片数为0")
+            self.set_status_message("所有选中项已在队列中或图片数量为0")
 
     def process_download_queue(self):
         self.update_downloads_tab_title()
         while len(self.active_download_workers) < MAX_CONCURRENT_DOWNLOADS and self.download_task_queue:
             task_item = self.download_task_queue.popleft()
+            if task_item.text(1) == "已暂停":
+                self.download_task_queue.append(task_item)
+                continue
+
             task_item.setText(1, "下载中")
+            if open_dir_btn := self._get_item_action_widget(task_item, "open_dir_btn"):
+                open_dir_btn.show()
+
             worker = DownloadWorker(task_item, self.download_directory)
             worker.progress.connect(self.on_download_progress)
             worker.finished.connect(self.on_download_finished)
@@ -1415,25 +1492,39 @@ class GalleryCrawler(QWidget):
         if self.is_shutting_down: return
         task_item.setText(1, message)
         task_item.setForeground(1, Qt.GlobalColor.black if is_success else Qt.GlobalColor.red)
+
+        if cancel_btn := self._get_item_action_widget(task_item, "cancel_btn"):
+            cancel_btn.setEnabled(False)
+
+        if is_success:
+            if open_dir_btn := self._get_item_action_widget(task_item, "open_dir_btn"):
+                open_dir_btn.show()
+
         if pb := self.download_tree.itemWidget(task_item, 2):
             pb.setValue(100 if is_success else 0)
             pb.setFormat("成功" if is_success else "失败")
             pb.setTextVisible(True)
         self.process_download_queue()
 
+    def pause_all_downloads(self):
+        for worker in self.active_download_workers.values():
+            worker.pause()
+        for item in self.download_task_queue:
+            if item.text(1) == "排队中":
+                item.setText(1, "已暂停")
+
+    def resume_all_downloads(self):
+        for worker in self.active_download_workers.values():
+            worker.resume()
+        for item in self.download_task_queue:
+            if item.text(1) == "已暂停":
+                item.setText(1, "排队中")
+        self.process_download_queue()
+
     def cancel_all_downloads(self):
         for worker in self.active_download_workers.values(): worker.cancel()
         for item in self.download_task_queue: item.setText(1, "已取消")
         self.download_task_queue.clear()
-        self.update_downloads_tab_title()
-
-    def cancel_selected_downloads(self):
-        for item in self.download_tree.selectedItems():
-            if item in self.active_download_workers:
-                self.active_download_workers[item].cancel()
-            elif item in self.download_task_queue:
-                self.download_task_queue.remove(item)
-                item.setText(1, "已取消")
         self.update_downloads_tab_title()
 
     def clear_finished_downloads(self):
