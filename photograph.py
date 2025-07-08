@@ -30,31 +30,8 @@ logger = logging.getLogger(__name__)
 # --- Constants & Styles ---
 BASE_URL = "https://www.mxd009.cc"
 GALLERY = "/gallery/"
-RANKINGS = {
-    "请选择排行榜": "",
-    "点击排行": "/sort/onclick/",
-    "收藏排行": "/sort/favnum/",
-    "点赞排行": "/sort/diggtop/",
-    "下载排行": "/sort/totaldown/"
-}
-TAGS = {
-    "请选择标签": "",
-    "丝袜诱惑": "/tags/siwayouhuo.html",
-    "丝袜美腿": "/tags/siwameitui.html",
-    "萝莉控": "/tags/luolikong.html",
-    "黑丝诱惑": "/tags/heisiyouhuo.html",
-    "街拍": "/tags/jiepai.html",
-    "美臀": "/tags/meitun.html",
-    "大尺-度": "/tags/dachi-du.html",
-    "JK": "/tags/jk.html",
-    "COS": "/tags/cos.html",
-    "美胸": "/tags/meixiong.html",
-    "制服诱惑": "/tags/zhifuyouhuo.html",
-    "私房": "/tags/sifang.html",
-    "性感": "/tags/xinggan.html",
-    "丝足诱惑": "/tags/sizuyouhuo.html",
-    "尤物": "/tags/youwu.html"
-}
+RANKINGS = {"请选择排行榜": ""}
+TAGS = {"请选择标签": ""}
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -220,6 +197,35 @@ class WebScraper:
             logger.error(f"Failed to crawl single gallery at {url}: {e}")
             return []
 
+    @staticmethod
+    def fetch_menu_data() -> Tuple[Dict[str, str], Dict[str, str]]:
+        """Fetches menu data from the homepage and returns it."""
+        local_rankings = {}
+        local_tags = {}
+        try:
+            session = WebScraper.get_session()
+            response = session.get(BASE_URL, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            menus = soup.select('div.menu ul li')
+            for menu in menus:
+                if "排行榜" in menu.text:
+                    ranking_items = menu.select('ul li a')
+                    for item in ranking_items:
+                        local_rankings[item.text.strip()] = item['href']
+                elif "标签" in menu.text:
+                    tag_items = menu.select('ul li a')
+                    for item in tag_items:
+                        local_tags[item.text.strip()] = item['href']
+
+            additional_tags = soup.select('.tags a')
+            for item in additional_tags:
+                local_tags[item.text.strip()] = item['href']
+
+        except requests.RequestException as e:
+            logger.error(f"Failed to fetch menu data: {e}")
+        return local_rankings, local_tags
+
 
 # --- Worker Threads ---
 class BaseWorker(QThread):
@@ -234,6 +240,21 @@ class BaseWorker(QThread):
         """Flags the worker to be cancelled."""
         self.is_cancelled = True
 
+class InitWorker(BaseWorker):
+    """Worker to fetch initial menu data asynchronously."""
+    data_ready = Signal(dict, dict)
+
+    def run(self):
+        try:
+            if self.is_cancelled:
+                return
+            rankings, tags = WebScraper.fetch_menu_data()
+            if not self.is_cancelled:
+                self.data_ready.emit(rankings, tags)
+        except Exception as e:
+            if not self.is_cancelled:
+                logger.error(f"Error in InitWorker: {e}")
+                self.error.emit(f"无法加载初始菜单数据: {e}")
 
 class ImageLoadWorker(BaseWorker):
     """Worker to load a single image for thumbnails."""
@@ -510,7 +531,6 @@ class DownloadWorker(BaseWorker):
                         while self.is_paused:
                             if self.is_cancelled:
                                 return False
-                            time.sleep(0.5)
                         if self.is_cancelled:
                             return False
                         f.write(chunk)
@@ -614,6 +634,8 @@ class ImageDownloadManager(QObject):
 
 class APIManager(QObject):
     """Manages API worker threads to prevent concurrent searches."""
+    # MODIFICATION: Add signal for initialization data
+    init_data_ready = Signal(dict, dict)
     search_results_ready = Signal(list, int, str)
     page_results_ready = Signal(list, int)
     gallery_info_ready = Signal(list)
@@ -646,7 +668,9 @@ class APIManager(QObject):
         # Connect signals
         worker.error.connect(self.error)
         worker.finished.connect(worker.deleteLater)
-        if isinstance(worker, SearchWorker):
+        if isinstance(worker, InitWorker):
+            worker.data_ready.connect(self.init_data_ready)
+        elif isinstance(worker, SearchWorker):
             worker.results_ready.connect(self.search_results_ready)
         elif isinstance(worker, PageFetchWorker):
             worker.results_ready.connect(self.page_results_ready)
@@ -660,6 +684,10 @@ class APIManager(QObject):
             worker.progress.connect(self.all_pages_progress)
 
         worker.start()
+
+    def fetch_initial_data(self):
+        """Starts a worker to fetch initial menu data without blocking."""
+        self._start_worker(InitWorker, concurrent=True)
 
     def _remove_concurrent_worker(self, worker: BaseWorker):
         if worker in self.concurrent_workers:
@@ -1088,6 +1116,9 @@ class GalleryCrawler(QWidget):
         self.setWindowTitle("Dream Gallery Crawler")
         self.resize(1300, 800)
 
+        self.set_status_message("正在初始化菜单...")
+        self.api_manager.fetch_initial_data()
+
     def init_ui(self):
         root_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -1106,13 +1137,15 @@ class GalleryCrawler(QWidget):
         ranking_layout.addWidget(QLabel("排行榜:"))
         self.ranking_combo = QComboBox()
         self.ranking_combo.addItems(RANKINGS.keys())
-        self.ranking_combo.model().item(0).setEnabled(False)  # Disable "请选择"
+        self.ranking_combo.model().item(0).setEnabled(False)
+        self.ranking_combo.setEnabled(False)
         ranking_layout.addWidget(self.ranking_combo)
 
         ranking_layout.addWidget(QLabel("标签:"))
         self.tag_combo = QComboBox()
         self.tag_combo.addItems(TAGS.keys())
         self.tag_combo.model().item(0).setEnabled(False)
+        self.tag_combo.setEnabled(False)
         ranking_layout.addWidget(self.tag_combo)
         ranking_layout.addStretch()
         top_layout.addLayout(ranking_layout)
@@ -1229,12 +1262,38 @@ class GalleryCrawler(QWidget):
         self.open_dir_btn.clicked.connect(self.open_download_directory)
 
         # API Manager Signals
+        self.api_manager.init_data_ready.connect(self.on_init_data_ready)
         self.api_manager.search_results_ready.connect(self.on_search_results_ready)
         self.api_manager.page_results_ready.connect(self.on_page_fetch_ready)
         self.api_manager.gallery_info_ready.connect(self.on_single_gallery_ready)
         self.api_manager.thumbnail_urls_ready.connect(self.on_thumbnail_urls_ready)
         self.api_manager.all_pages_results_ready.connect(self.on_all_results_fetched)
         self.api_manager.error.connect(self.on_worker_error)
+
+    def on_init_data_ready(self, rankings: Dict[str, str], tags: Dict[str, str]):
+        """Populates menus once the initial data has been fetched."""
+        if self.is_shutting_down:
+            return
+
+        if not rankings and not tags:
+            self.set_status_message("初始化菜单失败，请检查网络。", timeout=0)
+            QMessageBox.warning(self, "初始化失败", "无法加载排行榜和标签数据，请检查网络连接或稍后重试。")
+            return
+
+        RANKINGS.update(rankings)
+        TAGS.update(tags)
+
+        self.ranking_combo.clear()
+        self.ranking_combo.addItems(RANKINGS.keys())
+        self.ranking_combo.model().item(0).setEnabled(False)
+        self.ranking_combo.setEnabled(True)
+
+        self.tag_combo.clear()
+        self.tag_combo.addItems(TAGS.keys())
+        self.tag_combo.model().item(0).setEnabled(False)
+        self.tag_combo.setEnabled(True)
+
+        self.set_status_message("菜单初始化完成。", timeout=5000)
 
     def _add_item_actions(self, task_item: QTreeWidgetItem):
         """Adds action buttons (Cancel, Open) to a download task item."""
