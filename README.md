@@ -2,7 +2,6 @@
 Dream Gallery Crawler designed to provide a powerful and user-friendly solution for scraping and batch downloading images. It helps users efficiently search, preview, and batch download image sets from specified websites through a clean and intuitive graphical interface.
 
 ![search.png](images/search.png)
-![preview.png](images/preview.png)
 ![download.png](images/download.png)
 
 ## Features
@@ -15,10 +14,10 @@ Dream Gallery Crawler designed to provide a powerful and user-friendly solution 
 ## How to Use
 1.  Enter keywords in the top input box and click the "Search" button, or paste a target URL and press Enter.
 2.  The program will display the search results as thumbnails.
-3.  Click the "Preview" button below a gallery to open a new window and view all its images.
+3.  Click the "Preview" button below a gallery to browse all images as thumbnails, or click "View Original" to see the full-size image.
 4.  Click the "Download" button below a gallery, or choose to download from the preview window, to add the task to the "Download Management" list.
-5.  Use the "Download Selected", "Download This Page" buttons after checking galleries to perform batch downloads.
-6.  Switch to the "Download Management" tab to view and manage all download tasks.
+5.  After selecting galleries, use the "Download Selected", "Download This Page" buttons to perform batch downloads, or "Download All Results" to download all pages.
+6.  Switch to the "Download Management" tab to view, pause, cancel, or clear download tasks.
 
 ## Installation
 Python 3.10 or higher is recommended.
