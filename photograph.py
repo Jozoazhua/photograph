@@ -204,7 +204,7 @@ class WebScraper:
         local_tags = {}
         try:
             session = WebScraper.get_session()
-            response = session.get(BASE_URL, timeout=10)
+            response = session.get(BASE_URL, timeout=30)
             soup = BeautifulSoup(response.text, 'html.parser')
 
             menus = soup.select('div.menu ul li')
@@ -299,7 +299,7 @@ class SearchWorker(BaseWorker):
 
             response = session.get(url, timeout=15)
             if self.is_cancelled:
-                return
+                return self.error.emit("已取消")
 
             items, pages = WebScraper.parse_search_results_page(response.text)
             if not items:
@@ -744,7 +744,7 @@ class ThumbnailWidget(QFrame):
         self.load_status = self.STATUS_PENDING
         self.setFrameShape(self.Shape.StyledPanel)
         self.setFrameShadow(self.Shadow.Raised)
-        self.setFixedSize(220, 360)
+        self.setFixedSize(245, 440)
         self.setStyleSheet("QFrame { border: 1px solid #ddd; border-radius: 5px; background-color: white; }")
         self.init_ui()
 
@@ -760,7 +760,7 @@ class ThumbnailWidget(QFrame):
         title_label.setOpenExternalLinks(True)
         title_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.img_label = QLabel("等待加载…")
-        self.img_label.setFixedSize(200, 250)
+        self.img_label.setFixedSize(226, 317)
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_label.setStyleSheet("border: 1px solid #eee; background-color: #f8f8f8; border-radius: 3px;")
         info_label = QLabel(f"{self.item_data['author']} ({self.item_data['count']}P)")
@@ -1424,7 +1424,7 @@ class GalleryCrawler(QWidget):
     def _populate_grid(self, results: List[Dict]):
         """Creates and adds thumbnail widgets to the grid."""
         self._clear_grid()
-        cols = max(1, (self.scroll_area.width() - 30) // 235)
+        cols = max(1, (self.scroll_area.width() - 30) // 260)
         for i, item_data in enumerate(results):
             thumb_widget = ThumbnailWidget(item_data)
             thumb_widget.original_image_btn.clicked.connect(partial(self.show_original_images, item_data))
