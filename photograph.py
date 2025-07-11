@@ -4,6 +4,7 @@ import platform
 import random
 import re
 import sys
+import json
 import time
 from collections import deque
 from functools import partial
@@ -12,7 +13,7 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 from PySide6.QtCore import (QObject, QPoint, QRect, QSize, Qt, QThread, QTimer,
-                            QUrl, Signal)
+                            QUrl, Signal, QStandardPaths)
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QPainter, QPen,
                            QPixmap, QResizeEvent)
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog,
@@ -49,6 +50,16 @@ DEFAULT_HEADERS = {
     "Referer": BASE_URL,
 }
 MAX_CONCURRENT_DOWNLOADS = 3
+
+
+def get_config_path() -> str:
+    """Returns the path to the config file in a standard app data location."""
+    if getattr(sys, 'frozen', False):
+        app_data_path = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    else:
+        app_data_path = os.path.dirname(__file__)
+    os.makedirs(app_data_path, exist_ok=True)
+    return os.path.join(app_data_path, "conf")
 
 
 def get_download_directory() -> str:
@@ -1119,6 +1130,68 @@ class GalleryCrawler(QWidget):
         self.set_status_message("正在初始化菜单...")
         self.api_manager.fetch_initial_data()
 
+        self.load_state()
+
+    def load_state(self):
+        config_path = get_config_path()
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    state = json.load(f)
+                    self.download_directory = state.get("download_directory", get_download_directory())
+                    self.dir_path_label.setText(self.download_directory)
+                    tasks = state.get("tasks", [])
+                    for task_data in tasks:
+                        self.add_task_from_data(task_data)
+        except (IOError, json.JSONDecodeError) as e:
+            logger.warning(f"Could not load state file: {e}")
+
+    def save_state(self):
+        tasks = []
+        root = self.download_tree.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            tasks.append(self.get_task_data(item))
+
+        state = {
+            "download_directory": self.download_directory,
+            "tasks": tasks
+        }
+        try:
+            with open(get_config_path(), 'w') as f:
+                json.dump(state, f, indent=4)
+        except IOError as e:
+            logger.error(f"Could not save state file: {e}")
+
+    def get_task_data(self, item: QTreeWidgetItem) -> Dict:
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        return {
+            "title": item.text(0),
+            "status": item.text(1),
+            "author": item.text(3),
+            "url": data["url"],
+            "count": data["count"]
+        }
+
+    def add_task_from_data(self, task_data: Dict):
+        url = task_data.get("url")
+        if not url or url in self.task_map:
+            return
+
+        task_item = QTreeWidgetItem([task_data["title"], task_data["status"], "", task_data["author"]])
+        task_item.setData(0, Qt.ItemDataRole.UserRole, {"url": url, "count": task_data["count"]})
+        progress_bar = QProgressBar()
+        progress_bar.setValue(0)
+        progress_bar.setTextVisible(False)
+        self.download_tree.addTopLevelItem(task_item)
+        self.download_tree.setItemWidget(task_item, 2, progress_bar)
+        self._add_item_actions(task_item)
+
+        if task_data["status"] in ("排队中", "已暂停"):
+            self.download_task_queue.append(task_item)
+        self.task_map[url] = task_item
+        self.update_downloads_tab_title()
+
     def init_ui(self):
         root_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -1350,6 +1423,7 @@ class GalleryCrawler(QWidget):
             self.download_directory = directory
             self.dir_path_label.setText(self.download_directory)
             self.set_status_message(f"下载目录已更新为: {self.download_directory}")
+            self.save_state()
 
     def open_download_directory(self):
         """Opens the download directory in the file explorer."""
@@ -1815,19 +1889,8 @@ class GalleryCrawler(QWidget):
             event.ignore()
             return
 
-        active_tasks = len(self.active_download_workers) + len(self.download_task_queue)
-        if active_tasks > 0:
-            reply = QMessageBox.question(
-                self, '退出确认',
-                f"有 {active_tasks} 个任务仍在进行中，确定要退出吗？\n"
-                "（程序将尝试取消任务并等待线程结束）",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.No:
-                event.ignore()
-                return
-
+        self.pause_all_downloads()
+        self.save_state()
         self.shutdown_all_workers()
         event.accept()
 
