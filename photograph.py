@@ -1,3 +1,4 @@
+import base64
 import logging
 import os
 import platform
@@ -6,6 +7,7 @@ import re
 import sys
 import json
 import time
+import urllib
 from collections import deque
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
@@ -69,71 +71,143 @@ def get_download_directory() -> str:
         return os.path.expanduser("~/Downloads")
     return os.getcwd()
 
+
 class Cryptor:
-    web_aes_mode = {
-        "QUVTLUVDCg==": "ECB",
-        "QUVTLUNCQw==": "CBC",
-        "EsORW0Vqw6PCgA==": "CBC",
-        "QUVTLUNGQg==": "CFB",
-        "QUVTLU9GQg==": "OFB",
-        "QUVTLUNUUg==": "CTR",
-        "QUVTLUdDTQ==": "GCM",
-        "QUVTLUNDTQ==": "CCM",
-        "QUVTLVNJVg==": "SIV",
-        "QUVTLUVBWA==": "EAX",
-        "QUVTLU9DQg==": "OCB",
-        "QUVTLVhUUw==": "XTS"
-    }
     mode_map = {'OFB': AES.MODE_OFB, 'CBC': AES.MODE_CBC, 'ECB': AES.MODE_ECB, 'CTR': AES.MODE_CTR, 'CFB': AES.MODE_CFB,
                 'GCM': AES.MODE_GCM, 'CCM': AES.MODE_CCM, 'SIV': AES.MODE_SIV, 'EAX': AES.MODE_EAX, 'OCB': AES.MODE_OCB}
+
+    def rotate_array(self, target_list, hex_rotations):
+        """
+        旋转数组，将前面的元素移动到末尾。
+        :param target_list:  目标数组
+        :param hex_rotations: 十六进制旋转次数
+        :return:
+        """
+        num_rotations = hex_rotations
+        for _ in range(num_rotations):
+            first_element = target_list.pop(0)
+            target_list.append(first_element)
+
+    def rc4_decrypt(self, data: str, key: str) -> str:
+        data_bytes = base64.b64decode(data)
+        percent_encoded = ''.join('%{:02x}'.format(b) for b in data_bytes)
+        decoded_data = urllib.parse.unquote(percent_encoded)
+
+        # RC4 初始化
+        S = list(range(256))
+        j = 0
+        key_bytes = key.encode('utf-8')
+        decoded_bytes = decoded_data.encode('latin1')  # 用 latin1 保留原字节
+        for i in range(256):
+            j = (j + S[i] + key_bytes[i % len(key_bytes)]) % 256
+            S[i], S[j] = S[j], S[i]
+
+        # RC4 伪随机生成 + 解密
+        i = 0
+        j = 0
+        result = bytearray()
+        for byte in decoded_bytes:
+            i = (i + 1) % 256
+            j = (j + S[i]) % 256
+            S[i], S[j] = S[j], S[i]
+            K = S[(S[i] + S[j]) % 256]
+            result.append(byte ^ K)
+
+        return result.decode('utf-8')
+
+    def decode_base64(self, b64_string):
+        decoded_bytes = base64.b64decode(b64_string)
+        uri_encoded_str = ''.join([f'%{byte:02x}' for byte in decoded_bytes])
+        decoded_utf8_str = urllib.parse.unquote(uri_encoded_str, encoding='utf-8')
+        return decoded_utf8_str
 
     def decrypt_html(self, html_content: str) -> str:
         key = None
         iv = None
         tag = None
         encrypted_data = None
-        key_match = re.search(r'var\s+raw_key\s*=\s*\[([^]]+)]', html_content)
-        if key_match:
-            key_values = key_match.group(1).split(',')
-            key = bytes([int(v.strip()) for v in key_values])
-
-        # 提取 IV
-        iv_match = re.search(r'var\s+iv\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?', html_content)
-        if iv_match:
-            iv_values = iv_match.group(1).split(',')
-            iv = bytes([int(v.strip()) for v in iv_values])
-
-        # 提取 tag
-        tag_match = re.search(r'var\s+tag\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?', html_content)
-        if tag_match:
-            tag_values = tag_match.group(1).split(',')
-            tag = bytes([int(v.strip()) for v in tag_values])
-
-        # 提取加密数据
-        encrypted_match = re.search(r'var\s+encrypted\s*=\s*"([^"]+)"', html_content)
-        if encrypted_match:
-            encrypted_data = bytes.fromhex(encrypted_match.group(1))
-
-        if not key or not iv or not encrypted_data:
-            print("[-] 未能提取到足够的信息进行解密")
-            return ''
-
-        mode = None
-        for b64_key, aes_mode in self.web_aes_mode.items():
-            if b64_key in html_content:
-                mode = aes_mode
-                break
-
-        if not mode and tag:
-            mode = 'GCM'
-        elif not mode:
-            mode = 'CBC'
-
-        aes_mode = self.mode_map.get(mode)
-        authenticated_modes = {'GCM', 'CCM', 'EAX', 'OCB', 'SIV'}
         decrypted_data = ''
         try:
-            if mode in authenticated_modes:
+            soup = BeautifulSoup(html_content, 'html.parser')
+            html_content = str(soup.find_all('script'))[1000:-1000]
+
+            # 提取加密数据
+            encrypted_match = re.search(r'var\s+encrypted\s*=\s*"([^"]+)"', html_content)
+            if encrypted_match:
+                encrypted_data = bytes.fromhex(encrypted_match.group(1))
+                html_content = html_content.replace(encrypted_match.group(1), 'xxx')
+
+            # 提取密钥
+            key_match = re.search(r'var\s+raw_key\s*=\s*\[([^]]+)]', html_content)
+            if key_match:
+                key_values = key_match.group(1).split(',')
+                key = bytes([int(v.strip()) for v in key_values])
+
+            # 提取 IV
+            iv_match = re.search(r'var\s+iv\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?', html_content)
+            if iv_match:
+                iv_values = iv_match.group(1).split(',')
+                iv = bytes([int(v.strip()) for v in iv_values])
+
+            # 提取 tag
+            tag_match = re.search(r'var\s+tag\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?', html_content)
+            if tag_match:
+                tag_values = tag_match.group(1).split(',')
+                tag = bytes([int(v.strip()) for v in tag_values])
+
+            if not key or not iv or not encrypted_data:
+                print("[-] 未能提取到足够的信息进行解密")
+                return ''
+
+            import time
+            start_time = time.time()
+            # 提取加密数据的模式
+            array_index = None
+            decryption_key = None
+            model_index = html_content.find('raw_key)')
+            start_index, end_index = max(0, model_index - 100), model_index + 110
+            extracted_snippet = html_content[start_index:end_index]
+            model_match = re.search(r".*\((.*),\s*raw_key\);", extracted_snippet)
+            if model_match:
+                aes_model_info = model_match.group(1).strip()
+                if aes_model_info:
+                    aes_model_info = aes_model_info.replace("'", "").replace(")", "").replace("(", "")
+                    if ',' in aes_model_info:
+                        aes_model_list = aes_model_info.split(',')
+                        array_index = aes_model_list[0].strip()
+                        decryption_key = aes_model_list[1].strip()
+                    else:
+                        array_index = aes_model_info.strip()
+
+            print(f"[+] 提取加密数据的模式时: {time.time() - start_time:.2f}秒")
+
+            # 提取数据数组
+            data_var_match = re.search(r'}\((_0x[a-zA-Z0-9]+),\s*(0x[a-fA-F0-9]+)\)\);', html_content)
+            mode = None
+            if data_var_match:
+                variable_name = data_var_match.group(1)
+                hex_value = data_var_match.group(2)
+                data_var_value_match = re.search(rf'var\s+{variable_name}\s*=\s*\[([^]]+)]', html_content)
+                if data_var_value_match:
+                    data_var_values = data_var_value_match.group(1).split(',')
+                    data_var_values = [v.strip() for v in data_var_values]
+
+                    # 旋转数组
+                    self.rotate_array(data_var_values, int(hex_value, 16))
+                    # 获取模式
+                    encrypted_string = data_var_values[int(array_index, 16)]
+                    mode = self.rc4_decrypt(encrypted_string, decryption_key) if decryption_key else self.decode_base64(
+                        encrypted_string)
+
+            if mode and '-' in mode:
+                mode = mode.split('-')[1].strip()
+
+            if not mode and tag:
+                mode = 'GCM'
+            elif not mode:
+                mode = 'CBC'
+            aes_mode = self.mode_map.get(mode)
+            if mode in {'GCM', 'CCM', 'EAX', 'OCB', 'SIV'}:
                 if not tag:
                     print(f"[-] {mode} 模式需要认证标签(tag)但未找到")
                     return ''
@@ -144,15 +218,20 @@ class Cryptor:
                     print(f"[-] 认证失败: {e}")
                     return
             else:
-                cipher = AES.new(key, aes_mode, iv=iv)
+                if mode in {'CTR'}:
+                    cipher = AES.new(key, aes_mode, nonce=iv[:8], initial_value=iv[8:])
+                else:
+                    cipher = AES.new(key, aes_mode, iv=iv)
                 decrypted_data = cipher.decrypt(encrypted_data).decode('utf-8')
-        except:
-            print("[-] 解密过程中发生错误，可能是因为模式不匹配或数据损坏。")
+        except Exception as e:
+            print(f"[-] 解密过程中发生错误，可能是因为模式不匹配或数据损坏 : str{e}")
+            raise
 
         return decrypted_data
 
 
 cryptor = Cryptor()
+
 
 # --- Core Web Scraping Logic ---
 class WebScraper:
@@ -1436,8 +1515,8 @@ class GalleryCrawler(QWidget):
             return
 
         if not rankings and not tags:
-            self.set_status_message("初始化菜单失败，请检查网络。", timeout=0)
-            QMessageBox.warning(self, "初始化失败", "无法加载排行榜和标签数据，请检查网络连接或稍后重试。")
+            self.set_status_message("初始化菜单失败。", timeout=0)
+            QMessageBox.warning(self, "初始化失败", "无法加载排行榜和标签数据。")
             return
 
         RANKINGS.update(rankings)
