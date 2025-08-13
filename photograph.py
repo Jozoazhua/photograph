@@ -11,6 +11,7 @@ from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 import requests
+from Crypto.Cipher import AES
 from bs4 import BeautifulSoup
 from PySide6.QtCore import (QObject, QPoint, QRect, QSize, Qt, QThread, QTimer,
                             QUrl, Signal, QStandardPaths)
@@ -29,7 +30,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # --- Constants & Styles ---
-BASE_URL = "https://www.mxd009.cc"
+BASE_URL = "https://www.mxd05.cc/"
 GALLERY = "/gallery/"
 RANKINGS = {"请选择排行榜": ""}
 TAGS = {"请选择标签": ""}
@@ -68,6 +69,90 @@ def get_download_directory() -> str:
         return os.path.expanduser("~/Downloads")
     return os.getcwd()
 
+class Cryptor:
+    web_aes_mode = {
+        "QUVTLUVDCg==": "ECB",
+        "QUVTLUNCQw==": "CBC",
+        "EsORW0Vqw6PCgA==": "CBC",
+        "QUVTLUNGQg==": "CFB",
+        "QUVTLU9GQg==": "OFB",
+        "QUVTLUNUUg==": "CTR",
+        "QUVTLUdDTQ==": "GCM",
+        "QUVTLUNDTQ==": "CCM",
+        "QUVTLVNJVg==": "SIV",
+        "QUVTLUVBWA==": "EAX",
+        "QUVTLU9DQg==": "OCB",
+        "QUVTLVhUUw==": "XTS"
+    }
+    mode_map = {'OFB': AES.MODE_OFB, 'CBC': AES.MODE_CBC, 'ECB': AES.MODE_ECB, 'CTR': AES.MODE_CTR, 'CFB': AES.MODE_CFB,
+                'GCM': AES.MODE_GCM, 'CCM': AES.MODE_CCM, 'SIV': AES.MODE_SIV, 'EAX': AES.MODE_EAX, 'OCB': AES.MODE_OCB}
+
+    def decrypt_html(self, html_content: str) -> str:
+        key = None
+        iv = None
+        tag = None
+        encrypted_data = None
+        key_match = re.search(r'var\s+raw_key\s*=\s*\[([^]]+)]', html_content)
+        if key_match:
+            key_values = key_match.group(1).split(',')
+            key = bytes([int(v.strip()) for v in key_values])
+
+        # 提取 IV
+        iv_match = re.search(r'var\s+iv\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?', html_content)
+        if iv_match:
+            iv_values = iv_match.group(1).split(',')
+            iv = bytes([int(v.strip()) for v in iv_values])
+
+        # 提取 tag
+        tag_match = re.search(r'var\s+tag\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?', html_content)
+        if tag_match:
+            tag_values = tag_match.group(1).split(',')
+            tag = bytes([int(v.strip()) for v in tag_values])
+
+        # 提取加密数据
+        encrypted_match = re.search(r'var\s+encrypted\s*=\s*"([^"]+)"', html_content)
+        if encrypted_match:
+            encrypted_data = bytes.fromhex(encrypted_match.group(1))
+
+        if not key or not iv or not encrypted_data:
+            print("[-] 未能提取到足够的信息进行解密")
+            return ''
+
+        mode = None
+        for b64_key, aes_mode in self.web_aes_mode.items():
+            if b64_key in html_content:
+                mode = aes_mode
+                break
+
+        if not mode and tag:
+            mode = 'GCM'
+        elif not mode:
+            mode = 'CBC'
+
+        aes_mode = self.mode_map.get(mode)
+        authenticated_modes = {'GCM', 'CCM', 'EAX', 'OCB', 'SIV'}
+        decrypted_data = ''
+        try:
+            if mode in authenticated_modes:
+                if not tag:
+                    print(f"[-] {mode} 模式需要认证标签(tag)但未找到")
+                    return ''
+                cipher = AES.new(key, aes_mode, nonce=iv)
+                try:
+                    decrypted_data = cipher.decrypt_and_verify(encrypted_data, tag)
+                except ValueError as e:
+                    print(f"[-] 认证失败: {e}")
+                    return
+            else:
+                cipher = AES.new(key, aes_mode, iv=iv)
+                decrypted_data = cipher.decrypt(encrypted_data).decode('utf-8')
+        except:
+            print("[-] 解密过程中发生错误，可能是因为模式不匹配或数据损坏。")
+
+        return decrypted_data
+
+
+cryptor = Cryptor()
 
 # --- Core Web Scraping Logic ---
 class WebScraper:
@@ -216,7 +301,7 @@ class WebScraper:
         try:
             session = WebScraper.get_session()
             response = session.get(BASE_URL, timeout=30)
-            soup = BeautifulSoup(response.text, 'html.parser')
+            soup = BeautifulSoup(cryptor.decrypt_html(response.text), 'html.parser')
 
             menus = soup.select('div.menu ul li')
             for menu in menus:
@@ -251,6 +336,7 @@ class BaseWorker(QThread):
         """Flags the worker to be cancelled."""
         self.is_cancelled = True
 
+
 class InitWorker(BaseWorker):
     """Worker to fetch initial menu data asynchronously."""
     data_ready = Signal(dict, dict)
@@ -266,6 +352,7 @@ class InitWorker(BaseWorker):
             if not self.is_cancelled:
                 logger.error(f"Error in InitWorker: {e}")
                 self.error.emit(f"无法加载初始菜单数据: {e}")
+
 
 class ImageLoadWorker(BaseWorker):
     """Worker to load a single image for thumbnails."""
@@ -312,7 +399,7 @@ class SearchWorker(BaseWorker):
             if self.is_cancelled:
                 return self.error.emit("已取消")
 
-            items, pages = WebScraper.parse_search_results_page(response.text)
+            items, pages = WebScraper.parse_search_results_page(cryptor.decrypt_html(response.text))
             if not items:
                 return self.error.emit("没有找到结果。")
 
@@ -343,7 +430,7 @@ class PageFetchWorker(BaseWorker):
             if self.is_cancelled:
                 return
 
-            items, pages = WebScraper.parse_search_results_page(response.text)
+            items, pages = WebScraper.parse_search_results_page(cryptor.decrypt_html(response.text))
             self.results_ready.emit(items, pages)
         except Exception as e:
             if not self.is_cancelled:
@@ -371,7 +458,7 @@ class AllPagesFetchWorker(BaseWorker):
                 self.progress.emit(page, self.total_pages)
                 page_url = WebScraper.construct_page_url(self.base_url, page)
                 response = session.get(page_url, timeout=15)
-                items, _ = WebScraper.parse_search_results_page(response.text)
+                items, _ = WebScraper.parse_search_results_page(cryptor.decrypt_html(response.text))
                 all_items.extend(items)
                 time.sleep(0.1)  # Be polite to the server
 
@@ -415,7 +502,7 @@ class ThumbnailWorker(BaseWorker):
                 return
 
             response = session.get(self.url, timeout=10)
-            soup = BeautifulSoup(response.text, "html.parser")
+            soup = BeautifulSoup(cryptor.decrypt_html(response.text), "html.parser")
             tag = soup.select_one("div.gallerypic img")
             src = tag.get("src") if tag else None
 
@@ -518,7 +605,7 @@ class DownloadWorker(BaseWorker):
 
     def _get_image_urls(self) -> List[str]:
         response = self.session.get(self.url, timeout=10)
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(cryptor.decrypt_html(response.text), "html.parser")
         tag = soup.select_one("div.gallerypic img")
         src = tag.get("src") if tag else None
         if not src:
