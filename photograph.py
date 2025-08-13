@@ -224,8 +224,7 @@ class Cryptor:
                     cipher = AES.new(key, aes_mode, iv=iv)
                 decrypted_data = cipher.decrypt(encrypted_data).decode('utf-8')
         except Exception as e:
-            print(f"[-] 解密过程中发生错误，可能是因为模式不匹配或数据损坏 : str{e}")
-            raise
+            print(f"[-] 解密过程中发生错误，可能是因为模式不匹配或数据损坏 : {str(e)}")
 
         return decrypted_data
 
