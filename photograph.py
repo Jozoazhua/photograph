@@ -76,6 +76,19 @@ class Cryptor:
     mode_map = {'OFB': AES.MODE_OFB, 'CBC': AES.MODE_CBC, 'ECB': AES.MODE_ECB, 'CTR': AES.MODE_CTR, 'CFB': AES.MODE_CFB,
                 'GCM': AES.MODE_GCM, 'CCM': AES.MODE_CCM, 'SIV': AES.MODE_SIV, 'EAX': AES.MODE_EAX, 'OCB': AES.MODE_OCB}
 
+    def __init__(self):
+        self._re_encrypted = re.compile(r'var\s+encrypted\s*=\s*"([^"]+)"')
+        self._re_raw_key = re.compile(r'var\s+raw_key\s*=\s*\[([^]]+)]')
+        self._re_iv = re.compile(r'var\s+iv\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?')
+        self._re_tag = re.compile(r'var\s+tag\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?')
+        self._re_model_call = re.compile(r".*\((.*),\s*raw_key\);")
+        self._re_data_var = re.compile(r'}\((_0x[a-zA-Z0-9]+),\s*(0x[a-fA-F0-9]+)\)\);')
+        self._re_script_content = re.compile(r'<script[^>]*>(.*?)</script>', re.DOTALL | re.IGNORECASE)
+
+    def _inline_scripts_text(self, html_content: str) -> str:
+        scripts = self._re_script_content.findall(html_content)
+        return '\n'.join(scripts) if scripts else ''
+
     def rotate_array(self, target_list, hex_rotations):
         """
         旋转数组，将前面的元素移动到末尾。
@@ -83,10 +96,12 @@ class Cryptor:
         :param hex_rotations: 十六进制旋转次数
         :return:
         """
-        num_rotations = hex_rotations
-        for _ in range(num_rotations):
-            first_element = target_list.pop(0)
-            target_list.append(first_element)
+        if not target_list:
+            return
+        num_rotations = hex_rotations % len(target_list)
+        if num_rotations == 0:
+            return
+        target_list[:] = target_list[num_rotations:] + target_list[:num_rotations]
 
     def rc4_decrypt(self, data: str, key: str) -> str:
         data_bytes = base64.b64decode(data)
@@ -128,29 +143,28 @@ class Cryptor:
         encrypted_data = None
         decrypted_data = ''
         try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            html_content = str(soup.find_all('script'))[1000:-1000]
+            html_content = self._inline_scripts_text(html_content)[1000:-1000]
 
             # 提取加密数据
-            encrypted_match = re.search(r'var\s+encrypted\s*=\s*"([^"]+)"', html_content)
+            encrypted_match = self._re_encrypted.search(html_content)
             if encrypted_match:
                 encrypted_data = bytes.fromhex(encrypted_match.group(1))
                 html_content = html_content.replace(encrypted_match.group(1), 'xxx')
 
             # 提取密钥
-            key_match = re.search(r'var\s+raw_key\s*=\s*\[([^]]+)]', html_content)
+            key_match = self._re_raw_key.search(html_content)
             if key_match:
                 key_values = key_match.group(1).split(',')
                 key = bytes([int(v.strip()) for v in key_values])
 
             # 提取 IV
-            iv_match = re.search(r'var\s+iv\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?', html_content)
+            iv_match = self._re_iv.search(html_content)
             if iv_match:
                 iv_values = iv_match.group(1).split(',')
                 iv = bytes([int(v.strip()) for v in iv_values])
 
             # 提取 tag
-            tag_match = re.search(r'var\s+tag\s*=\s*(?:new\s+Uint8Array\s*\()?\s*\[([^]]+)\](?:\s*\))?', html_content)
+            tag_match = self._re_tag.search(html_content)
             if tag_match:
                 tag_values = tag_match.group(1).split(',')
                 tag = bytes([int(v.strip()) for v in tag_values])
@@ -159,15 +173,13 @@ class Cryptor:
                 print("[-] 未能提取到足够的信息进行解密")
                 return ''
 
-            import time
-            start_time = time.time()
             # 提取加密数据的模式
             array_index = None
             decryption_key = None
             model_index = html_content.find('raw_key)')
             start_index, end_index = max(0, model_index - 100), model_index + 110
             extracted_snippet = html_content[start_index:end_index]
-            model_match = re.search(r".*\((.*),\s*raw_key\);", extracted_snippet)
+            model_match = self._re_model_call.search(extracted_snippet)
             if model_match:
                 aes_model_info = model_match.group(1).strip()
                 if aes_model_info:
@@ -179,10 +191,8 @@ class Cryptor:
                     else:
                         array_index = aes_model_info.strip()
 
-            print(f"[+] 提取加密数据的模式时: {time.time() - start_time:.2f}秒")
-
             # 提取数据数组
-            data_var_match = re.search(r'}\((_0x[a-zA-Z0-9]+),\s*(0x[a-fA-F0-9]+)\)\);', html_content)
+            data_var_match = self._re_data_var.search(html_content)
             mode = None
             if data_var_match:
                 variable_name = data_var_match.group(1)
